@@ -1,0 +1,23 @@
+/*
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+
+# 图片文件缓存配置 - 1天
+/*.jpg, /*.jpeg, /*.png, /*.gif, /*.webp, /*.avif
+  Cache-Control: public, max-age=86400, must-revalidate
+  Access-Control-Allow-Origin: *
+
+# 视频文件缓存配置 - 7天
+/*.mp4, /*.webm, /*.ogg, /*.mov
+  Cache-Control: public, max-age=604800, must-revalidate
+  Access-Control-Allow-Origin: *
+
+# 静态资源缓存配置 - 1天
+/*.css, /*.js, /*.json
+  Cache-Control: public, max-age=86400, must-revalidate
+
+# 字体文件缓存配置 - 30天
+/*.woff, /*.woff2, /*.ttf, /*.otf
+  Cache-Control: public, max-age=2592000, must-revalidate
+  Access-Control-Allow-Origin: *
