@@ -1,0 +1,214 @@
+%% Supabase Chat 12 Features — Class Diagram
+%% Generated from ARCHITECTURE-12-features.md
+
+classDiagram
+    class Message {
+        +string id
+        +string user
+        +MessageType type
+        +string content
+        +string timestamp
+        +string? quoteId
+        +Quote? quote
+        +SendStatus? sendStatus
+        +string? edited_at
+        +LinkPreview? link_preview
+        +string? file_name
+        +number? file_size
+        +string? file_mime
+        +ForwardedFrom? forwarded_from
+    }
+
+    class MessageType {
+        <<enumeration>>
+        text
+        image
+        video
+        voice
+        file
+    }
+
+    class Reaction {
+        +string id
+        +string message_id
+        +string user
+        +string emoji
+        +string created_at
+    }
+
+    class ReactionSummary {
+        +string emoji
+        +number count
+        +string[] users
+        +boolean reactedByMe
+    }
+
+    class ReactionsMap {
+        <<type>>
+        Record~string, ReactionSummary[]~
+    }
+
+    class LinkPreview {
+        +string url
+        +string title
+        +string description
+        +string image
+        +string fetched_at
+    }
+
+    class Room {
+        +string id
+        +string name
+        +string created_by
+        +string created_at
+        +string? last_message_at
+        +string? pinned_message_id
+        +RoomType type
+    }
+
+    class RoomType {
+        <<enumeration>>
+        public
+        dm
+    }
+
+    class DMRoom {
+        +string[] participants
+        +string otherUser
+    }
+
+    class PushSubscription {
+        +string id
+        +string user
+        +string endpoint
+        +string p256dh
+        +string auth
+        +string created_at
+    }
+
+    class ForwardedFrom {
+        +string user
+        +string room_id
+        +string room_name
+        +string message_id
+    }
+
+    class RoomGroup {
+        +string id
+        +string name
+        +string[] roomIds
+    }
+
+    class RoomGroupsConfig {
+        +RoomGroup[] groups
+        +Record~string, boolean~ expanded
+    }
+
+    class VirtualListItem {
+        <<union>>
+        separator: SeparatorItem
+        message: MessageItem
+    }
+
+    class SeparatorItem {
+        +string type
+        +string date
+        +string key
+    }
+
+    class MessageItem {
+        +string type
+        +Message message
+        +number originalIndex
+        +string key
+    }
+
+    class Quote {
+        +string user
+        +MessageType type
+        +string content
+    }
+
+    class SendStatus {
+        <<enumeration>>
+        sending
+        sent
+        failed
+    }
+
+    %% Relationships
+    Message --> MessageType : type
+    Message "1" --> "0..1" Quote : quote
+    Message --> SendStatus : sendStatus
+    Message "1" --> "0..*" Reaction : has (CASCADE)
+    Message "1" --> "0..1" LinkPreview : link_preview
+    Message "1" --> "0..1" ForwardedFrom : forwarded_from
+
+    Reaction "1" --> "1" ReactionSummary : aggregates into
+
+    Room --> RoomType : type
+    Room "1" --> "0..1" Message : pinned_message_id
+    DMRoom --|> Room : extends
+
+    RoomGroupsConfig "1" --> "0..*" RoomGroup : groups
+    Room "0..*" --> "0..1" RoomGroup : assigned to
+
+    VirtualListItem --> SeparatorItem
+    VirtualListItem --> MessageItem
+    MessageItem --> Message
+
+    %% Hooks (service layer)
+    class useReactions {
+        +ReactionsMap reactionsMap
+        +loadReactions(messageIds: string[]): Promise~void~
+        +toggleReaction(messageId: string, emoji: string): void
+    }
+
+    class useLinkPreview {
+        +Map~string, LinkPreview~ cache
+        +getPreview(url: string, messageId?: string): Promise~LinkPreview?~
+        +extractUrls(content: string): string[]
+    }
+
+    class useGlobalSearch {
+        +string keyword
+        +SearchFilters filters
+        +Message[] results
+        +boolean loading
+        +search(): void
+        +onResultClick(message: Message): void
+    }
+
+    class useDraft {
+        +saveDraft(roomId: string, content: string): void
+        +loadDraft(roomId: string): string | null
+        +clearDraft(roomId: string): void
+    }
+
+    class usePinnedMessage {
+        +Message? null pinnedMessage
+        +loadPinned(room: Room): Promise~void~
+        +pinMessage(messageId: string): Promise~void~
+        +unpinMessage(): Promise~void~
+    }
+
+    class useDM {
+        +DMRoom[] dmRooms
+        +loadDMs(): Promise~void~
+        +startDM(userA: string, userB: string): Promise~string~
+    }
+
+    class usePushNotification {
+        +boolean isPushEnabled
+        +enablePush(): Promise~void~
+        +disablePush(): Promise~void~
+    }
+
+    class useRoomGroups {
+        +RoomGroupsConfig config
+        +createGroup(name: string): void
+        +renameGroup(id: string, name: string): void
+        +deleteGroup(id: string): void
+        +assignRoom(roomId: string, groupId: string): void
+        +toggleGroup(id: string): void
+    }

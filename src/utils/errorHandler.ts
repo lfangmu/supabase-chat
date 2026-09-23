@@ -1,3 +1,5 @@
+import { toast } from 'sonner';
+
 // 错误类型定义
 export enum ErrorType {
   UPLOAD_FAILED = 'UPLOAD_FAILED',
@@ -38,19 +40,16 @@ export const createError = (type: ErrorType, details?: string): AppError => {
 
 // 显示错误提示
 export const showError = (error: AppError | string) => {
-  const errorObj = typeof error === 'string' 
-    ? createError(ErrorType.UNKNOWN_ERROR, error) 
+  const errorObj = typeof error === 'string'
+    ? createError(ErrorType.UNKNOWN_ERROR, error)
     : error;
-  
-  // 这里可以根据需要替换为更友好的错误提示组件
-  // 例如使用 toast 通知或模态框
-  alert(`${errorObj.message}${errorObj.details ? `\n\n详情：${errorObj.details}` : ''}`);
+
+  toast.error(`${errorObj.message}${errorObj.details ? ` — ${errorObj.details}` : ''}`);
 };
 
 // 显示成功提示
 export const showSuccess = (message: string) => {
-  // 这里可以根据需要替换为更友好的成功提示组件
-  alert(message);
+  toast.success(message);
 };
 
 // 处理网络错误

@@ -1,0 +1,36 @@
+name: Supabase Keepalive
+
+# 防止 Supabase 免费项目因长时间无活动被自动暂停（auto-pause，约 7 天窗口）。
+# 每 6 小时 GET 一次线上保活端点，每次成功查询都算一次数据库活动，使项目保持唤醒。
+# 端点本身在 src/app/api/keepalive/route.ts，已在 middleware 白名单中（无需登录即可访问）。
+on:
+  schedule:
+    - cron: '0 */6 * * *' # 每 6 小时整点触发
+  workflow_dispatch: {} # 允许在 Actions 页面手动触发，便于验证
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ping keepalive endpoint
+        env:
+          KEEPALIVE_URL: ${{ vars.KEEPALIVE_URL }}
+        run: |
+          # 目标地址必须来自仓库 Variables 中的 KEEPALIVE_URL（自部署时设为你的站点 URL）。
+          # 仓库不内置任何具体部署地址；未设置则保活任务失败并给出配置提示。
+          if [ -z "${KEEPALIVE_URL}" ]; then
+            echo "::error::未配置 KEEPALIVE_URL（仓库 Variables）。请在仓库 Settings → Secrets and variables → Actions → Variables 中新增 KEEPALIVE_URL，值设为你的部署地址（如 https://your-chat.example.com），否则保活无法运行。"
+            exit 1
+          fi
+          URL="${KEEPALIVE_URL}/api/keepalive"
+          CODE=$(curl -sS -o /tmp/ka.json -w "%{http_code}" --max-time 20 "$URL")
+          echo "HTTP $CODE"
+          cat /tmp/ka.json
+          echo
+          if [ "$CODE" != "200" ]; then
+            echo "::warning::keepalive 未返回 200（$CODE）。若 Supabase 项目已被暂停，请到 Supabase Dashboard 手动 Restore 一次，之后本任务即可持续保活。"
+          fi

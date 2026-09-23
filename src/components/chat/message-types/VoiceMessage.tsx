@@ -1,7 +1,10 @@
 'use client';
 
 import React, { useState, useRef } from 'react';
+import { Play, Square } from 'lucide-react';
 import { Message } from '@/types';
+import { useSignedUrl } from '@/hooks/useSignedUrl';
+import { wechatSelfBubble, wechatOtherBubble } from '@/utils/chatStyles';
 
 interface VoiceMessageProps {
   message: Message;
@@ -13,6 +16,7 @@ const VoiceMessage: React.FC<VoiceMessageProps> = React.memo(({ message, isSelf 
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const resolvedUrl = useSignedUrl(message.content);
 
   const handlePlayPause = () => {
     if (!audioRef.current) return;
@@ -48,21 +52,18 @@ const VoiceMessage: React.FC<VoiceMessageProps> = React.memo(({ message, isSelf 
 
   return (
     <div className="flex items-center gap-2">
-      <div className={`px-4 py-2 rounded-2xl ${isSelf ? 'bg-green-500 text-white' : 'bg-white text-gray-900'} min-w-[80px] max-w-[200px] shadow-sm`}>
+      <div className={`px-4 py-2 rounded-2xl ${isSelf ? wechatSelfBubble : wechatOtherBubble} min-w-[80px] max-w-[200px]`}>
         <div className="flex items-center justify-between w-full">
           <button
             onClick={handlePlayPause}
-            className={`flex items-center justify-center ${isSelf ? 'text-white' : 'text-gray-600'}`}
+            disabled={!resolvedUrl}
+            aria-label={isPlaying ? '暂停语音' : '播放语音'}
+            className={`flex items-center justify-center ${isSelf ? 'text-primary-foreground' : 'text-foreground'}`}
           >
             {isPlaying ? (
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
+              <Square className="w-4 h-4" />
             ) : (
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
+              <Play className="w-4 h-4" />
             )}
           </button>
           <span className="text-xs font-medium">
@@ -71,20 +72,22 @@ const VoiceMessage: React.FC<VoiceMessageProps> = React.memo(({ message, isSelf 
         </div>
         {isPlaying && duration > 0 && (
           <div className="w-full bg-white/30 rounded-full h-1 mt-1 overflow-hidden">
-            <div 
+            <div
               className="h-full bg-white"
               style={{ width: `${(currentTime / duration) * 100}%` }}
             ></div>
           </div>
         )}
       </div>
-      <audio
-        ref={audioRef}
-        src={message.content}
-        onTimeUpdate={handleTimeUpdate}
-        onLoadedMetadata={handleLoadedMetadata}
-        onEnded={handleEnded}
-      />
+      {resolvedUrl && (
+        <audio
+          ref={audioRef}
+          src={resolvedUrl}
+          onTimeUpdate={handleTimeUpdate}
+          onLoadedMetadata={handleLoadedMetadata}
+          onEnded={handleEnded}
+        />
+      )}
     </div>
   );
 });

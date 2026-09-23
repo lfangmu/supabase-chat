@@ -1,268 +1,81 @@
-# Supabase Chat with Password Protection
+# Supabase Chat · 密码保护实时聊天
 
-这是一个带有密码保护功能的实时聊天应用，基于 Next.js 和 Supabase 构建，支持实时消息、文件分享、消息撤回等功能。
+![Supabase Chat 预览](docs/preview.png)
 
-## 项目概述
-
-本项目旨在提供一个安全、易用的实时聊天解决方案，适合小团队内部沟通使用。通过密码保护机制，确保只有授权用户能够访问聊天室。
+基于 **Next.js 14 (App Router) + Supabase** 的实时聊天应用，支持多房间、富媒体、消息编辑/撤回/表情回应、全文搜索、暗色模式、在线状态与打字指示、Web Push，以及**可开关的密码门禁**与**独立的管理后台**。
 
 ## 功能特性
 
-### 核心功能
-- 🔐 **全局密码保护** - 所有用户共享同一密码，确保只有授权用户能够访问
-- 🔄 **自动检测密码变更** - 管理员修改密码后，所有在线用户会自动退出并需要重新登录
-- 💬 **实时聊天功能** - 基于 Supabase 的实时广播功能，消息实时同步
-- 🖼️ **多媒体分享** - 支持图片和视频上传与分享
-- 📱 **响应式设计** - 适配桌面端、平板和移动设备
-- 🌙 **深色模式支持** - 自动根据系统设置切换
-- 🔄 **消息撤回功能** - 支持撤回已发送的消息
-- 📚 **聊天历史记录** - 本地缓存和数据库存储，确保消息不丢失
-- 📤 **分享功能** - 生成包含密码的分享链接，方便快速邀请他人加入
+- 💬 实时聊天（Supabase Realtime）、多房间、富媒体（图片/视频/语音）
+- 📝 Markdown 渲染（代码高亮 + XSS 过滤）、表情回应、消息编辑/撤回
+- 🔍 全局搜索、草稿自动保存、@提及红点、服务端权威送达（离线不丢消息）
+- 🌙 暗色模式、在线状态与打字指示、Web Push 推送
+- 🔐 密码门禁（可开关）、独立管理后台 `/admin`（双会话物理隔离）
 
-### 用户体验优化
-- 📊 **上传进度显示** - 文件上传时在消息列表中显示上传进度
-- 🖼️ **图片压缩** - 自动压缩上传的图片，减少带宽占用
-- ⚡ **懒加载图片** - 使用 Next.js 的 Image 组件实现图片懒加载
-- 🎨 **现代化界面** - 简洁、现代的设计风格
-- 🔒 **安全的分享链接** - 密码和时间戳加密存储在分享链接中
+## 技术栈
 
-### 技术优化
-- 📁 **模块化架构** - 组件化设计，代码结构清晰
-- ⚡ **性能优化** - 使用 React.memo、useCallback、useMemo 等优化渲染性能
-- 🔧 **集中化配置** - 所有配置项集中管理，方便修改
-- 📝 **类型安全** - 完整的 TypeScript 类型定义
-- 🛡️ **错误处理** - 友好的错误提示和错误处理机制
+| 层 | 技术 |
+|---|---|
+| 框架 | Next.js 14.2（App Router，Edge Runtime API Routes） |
+| 语言 | TypeScript 5（strict） |
+| 数据库 / 实时 | Supabase（PostgreSQL + Realtime + Storage） |
+| 鉴权 | 自研 HS256 JWT（Web Crypto API）+ httpOnly Cookie（双会话隔离） |
+| 部署 | Cloudflare Pages（`@cloudflare/next-on-pages`） |
+| 边缘函数 | Supabase Edge Functions（Deno）— 服务端消息广播 |
+| 测试 | Vitest + Testing Library |
 
-## 技术架构
-
-### 前端技术栈
-- Next.js 14.2.1 - React 框架
-- TypeScript - 类型安全的 JavaScript 超集
-- Tailwind CSS - 实用优先的 CSS 框架
-- React Hooks - 状态管理和副作用处理
-
-### 后端技术栈
-- Supabase - 开源的 Firebase 替代品，提供数据库、认证和存储服务
-  - PostgreSQL - 关系型数据库
-  - Realtime - 实时数据同步
-  - Storage - 文件存储
-
-### 项目结构
-
-```
-supabase-chat/
-├── src/
-│   ├── app/            # Next.js 应用目录
-│   ├── components/     # React 组件
-│   │   ├── chat/       # 聊天相关组件
-│   │   └── PasswordGate.tsx  # 密码验证组件
-│   ├── config/         # 配置文件
-│   ├── hooks/          # 自定义 React Hooks
-│   ├── types/          # TypeScript 类型定义
-│   └── utils/          # 工具函数
-├── public/             # 静态资源
-├── .env.local          # 环境变量
-├── next.config.mjs     # Next.js 配置
-├── package.json        # 项目依赖
-├── tailwind.config.ts  # Tailwind CSS 配置
-└── tsconfig.json       # TypeScript 配置
-```
-
-## 安装和设置
-
-### 前提条件
-- Node.js 18.17.0 或更高版本
-- npm、yarn、pnpm 或 bun 包管理器
-- Supabase 项目账户
-
-### 安装步骤
-
-1. **克隆项目**
-   ```bash
-   git clone https://github.com/your-username/supabase-chat.git
-   cd supabase-chat
-   ```
-
-2. **安装依赖**
-   ```bash
-   npm install
-   # 或
-   yarn install
-   # 或
-   pnpm install
-   ```
-
-3. **配置环境变量**
-   复制 `.env.example` 文件为 `.env.local` 并填写相应的环境变量：
-   ```bash
-   cp .env.example .env.local
-   ```
-
-4. **设置 Supabase 项目**
-   - 创建一个新的 Supabase 项目
-   - 在数据库中创建 `messages` 表，包含以下字段：
-     - `id` (UUID, 主键)
-     - `room_id` (VARCHAR)
-     - `user` (VARCHAR)
-     - `type` (VARCHAR)
-     - `content` (TEXT)
-     - `timestamp` (VARCHAR)
-   - 创建 `chat-media` 存储桶，用于存储上传的图片和视频
-   - 在存储桶的策略中添加允许匿名用户上传和删除文件的权限
-
-## 环境变量配置
-
-在 `.env.local` 文件中配置以下环境变量：
-
-```env
-# Supabase 配置
-NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
-NEXT_PUBLIC_SUPABASE_KEY=your_supabase_key
-
-# 聊天密码配置
-CHAT_PASSWORD=your_password_here
-```
-
-### 环境变量说明
-- `NEXT_PUBLIC_SUPABASE_URL` - Supabase 项目的 URL
-- `NEXT_PUBLIC_SUPABASE_KEY` - Supabase 项目的匿名访问密钥
-- `CHAT_PASSWORD` - 聊天室的访问密码
-
-## 开发指南
-
-### 启动开发服务器
+## 快速开始
 
 ```bash
-npm run dev
-# 或
-yarn dev
-# 或
-pnpm dev
+git clone <your-repo-url> supabase-chat
+cd supabase-chat
+npm install
+cp .env.example .env.local      # 填入 Supabase 凭证与密码（见「部署」）
+npm run dev                     # http://localhost:3000
 ```
 
-在浏览器中打开 [http://localhost:3000](http://localhost:3000) 查看应用。
+打开 `/` 输入 `CHAT_PASSWORD` 进入聊天；打开 `/admin` 输入 `ADMIN_PASSWORD` 进入后台。
 
-### 代码规范
-- 使用 TypeScript 编写所有代码
-- 遵循 ESLint 规则
-- 使用 Prettier 格式化代码
-- 组件命名使用 PascalCase
-- 变量和函数命名使用 camelCase
-- 常量命名使用 UPPER_CASE
+## 部署
 
-### 开发流程
-1. 创建新的分支
-2. 实现功能或修复 bug
-3. 运行 `npm run lint` 检查代码规范
-4. 运行 `npm run build` 确保项目可以正常构建
-5. 提交代码并创建 Pull Request
+本项目部署到 **Cloudflare Pages**，构建命令 `npm run cf:build`，输出目录 `.vercel/output/static`。
+完整流程（准备 Supabase、配置环境变量、应用迁移、部署 Edge Function、配置保活、构建 Android APK、API 参考、故障排除）见 **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**。
 
-## 部署指南
+## 免费层（Free tier）
 
-### Vercel 部署
+本项目可完全跑在各大平台的免费层上，**零成本自托管**：
 
-1. **导入项目**
-   - 访问 [Vercel](https://vercel.com/new) 并登录
-   - 点击 "New Project"，选择导入你的 GitHub 仓库
+- **Cloudflare Pages**：免费托管前端，含构建、请求量与带宽额度，无需信用卡。
+- **Supabase Free**：免费 Postgres + Realtime + Storage + Edge Functions。
+  - ⚠️ 免费项目约 **7 天无数据库活动会被自动暂停**（所有读写与实时订阅失败）。仓库内的 `keepalive.yml` 每 6 小时 ping 一次保活端点来规避——你需要在仓库 `Settings → Variables` 设 `KEEPALIVE_URL`（你的部署地址），否则保活任务会失败。
+- **ImgBB / VAPID**：图片代理与 Web Push 均可用免费方案，非必需。
 
-2. **配置项目**
-   - 选择项目根目录
-   - 框架选择 "Next.js"
+> 只要 Supabase 用免费层，就务必保留 keepalive 定时任务并正确配置 `KEEPALIVE_URL`，否则隔一阵子站点会"冻住"。
 
-3. **设置环境变量**
-   - 在 "Environment Variables" 部分添加与 `.env.local` 相同的环境变量
+## 配置参数获取
 
-4. **部署项目**
-   - 点击 "Deploy" 按钮开始部署
-   - 部署完成后，Vercel 会提供一个 URL 访问你的应用
+部署与 CI 所需的密钥 / 变量，获取位置如下（完整说明见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)）：
 
-### Cloudflare Pages 部署
+| 参数 | 获取位置 |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase 项目 → **Project Overview** 首页顶部（项目名下方带 Copy 按钮的 URL，形如 `https://<ref>.supabase.co`） |
+| `NEXT_PUBLIC_SUPABASE_KEY` / `SUPABASE_SERVICE_ROLE_KEY` | 同项目 → **Project Settings → API Keys**：**Publishable key**（`sb_publishable_…`，公开、可进浏览器）与 **Secret key**（`sb_secret_…`；保密，仅服务端用，切勿加 `NEXT_PUBLIC_` 前缀） |
+| `SUPABASE_PROJECT_REF` | Supabase Dashboard → **Project Settings → General** → Project ID / Reference ID（仅本地 `supabase` CLI 用；关联仓库后 CI 不再需要） |
+| `SUPABASE_ACCESS_TOKEN` | Supabase 头像菜单 → **Account → Access Tokens** → 新建（仅本地 `supabase` CLI 用；采用 Supabase GitHub App 关联仓库后 CI 不再需要） |
+| `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` | **已不需要**（采用 Cloudflare Pages Git 集成，不在仓库配 Cloudflare 密钥）；仅当你改用 `wrangler` CLI 手动部署时才需申请 |
+| `BROADCAST_SIGNING_KEY` | 本地 `node scripts/gen-broadcast-keys.mjs` 生成、或双击 `scripts/gen-broadcast-keys.html` 一键生成的 Ed25519 **私钥**（PKCS8 base64），设为 **Supabase 项目函数密钥**（Dashboard → Edge Functions → Secrets 或 `supabase secrets set`），用于广播防伪造（非 GitHub Secret）。与之配对的**公钥**须设为 Cloudflare 构建变量 `NEXT_PUBLIC_BROADCAST_VERIFY_KEY`（前端内联的默认公钥与你的私钥不匹配，不填会导致广播校验失败） |
+| `CHAT_PASSWORD` / `CHAT_JWT_SECRET` / `ADMIN_PASSWORD` | 自行设定的随机值（非平台获取，建议 ≥32 位随机串） |
+| `KEEPALIVE_URL` / `APP_URL` | 你自己的部署域名，设为仓库 **Variables**（非 Secrets） |
 
-1. **登录 Cloudflare**
-   - 访问 [Cloudflare Pages](https://pages.cloudflare.com/) 并登录
+> 标记 **Secrets** 的项在 GitHub 仓库 `Settings → Secrets and variables → Actions → Secrets` 配置；标记 **Variables** 的项在同级 **Variables** 页配置。
 
-2. **创建项目**
-   - 点击 "Create a project"
-   - 选择你的 GitHub 仓库
+## 文档
 
-3. **配置构建**
-   - 构建命令：`npm run build`
-   - 构建输出目录：`.next`
-
-4. **设置环境变量**
-   - 在 "Environment Variables" 部分添加所需的环境变量
-
-5. **部署项目**
-   - 点击 "Save and Deploy" 开始部署
-
-## 配置选项
-
-项目的配置选项集中在 `src/config/index.ts` 文件中，包括：
-
-### 文件上传配置
-- `MAX_FILE_SIZE` - 最大文件大小（默认 50MB）
-- `ALLOWED_FILE_TYPES` - 允许的文件类型
-- `IMAGE_COMPRESSION` - 图片压缩参数
-
-### 消息配置
-- `PAGE_SIZE` - 加载历史消息的页面大小（默认 20）
-
-### 认证配置
-- `SHARE_LINK_EXPIRY` - 分享链接有效期（默认 24 小时）
-
-### 其他配置
-- `DEFAULT_ROOM` - 默认房间名称
-- `SIGNED_URL_EXPIRY` - 签名 URL 有效期
-
-## 故障排除
-
-### 常见问题
-
-1. **上传失败**
-   - 检查文件大小是否超过限制
-   - 检查文件类型是否被允许
-   - 检查网络连接
-   - 检查 Supabase 存储桶权限设置
-
-2. **消息发送失败**
-   - 检查网络连接
-   - 检查 Supabase 实时功能是否正常
-
-3. **密码验证失败**
-   - 检查输入的密码是否正确
-   - 检查环境变量中的 `CHAT_PASSWORD` 是否设置
-
-4. **部署失败**
-   - 检查环境变量是否正确设置
-   - 检查构建命令是否正确
-   - 检查依赖是否安装成功
-
-### 日志和调试
-- 前端错误会在浏览器控制台显示
-- Supabase 相关错误会在控制台显示
-- 构建错误会在部署平台的日志中显示
-
-## 贡献指南
-
-欢迎贡献代码或提出建议！
-
-1. **Fork 项目**
-2. **创建分支** (`git checkout -b feature/AmazingFeature`)
-3. **提交更改** (`git commit -m 'Add some AmazingFeature'`)
-4. **推送到分支** (`git push origin feature/AmazingFeature`)
-5. **打开 Pull Request**
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — 完整部署指南（环境变量 / Cloudflare Pages / 自部署 / 迁移 / Edge Function / 保活 / APK / API / 故障排除）
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 架构速览（双会话鉴权、middleware、数据模型、消息送达机制、安全纵深）
+- 历史设计文档：`docs/ARCHITECTURE-12-features.md` / `docs/PRD-12-features.md` / `docs/refactor-groupchat-design.md`（部分鉴权描述已过时，以本仓库 README 与 `docs/ARCHITECTURE.md` 为准）
+- 图：`docs/class-diagram.mermaid` / `docs/sequence-diagram.mermaid`
 
 ## 许可证
 
-本项目采用 MIT 许可证 - 详情请参阅 [LICENSE](LICENSE) 文件
-
-## 致谢
-
-- [Next.js](https://nextjs.org/) - React 框架
-- [Supabase](https://supabase.com/) - 开源的 Firebase 替代品
-- [Tailwind CSS](https://tailwindcss.com/) - CSS 框架
-- [Compressor.js](https://github.com/fengyuanchen/compressorjs) - 图片压缩库
-
----
-
-**享受聊天！** 🎉
+采用 MIT 许可证。

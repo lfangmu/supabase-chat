@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">私聊</string>
+    <string name="title_activity_main">私聊</string>
+    <string name="package_name">cc.ru.chat</string>
+    <string name="custom_url_scheme">cc.ru.chat</string>
+</resources>

@@ -1,0 +1,14 @@
+-- Optional seed data for development
+-- Insert a welcome message for the default room
+
+-- Uncomment below if you want a seed message on fresh databases:
+-- INSERT INTO public.messages (id, room_id, "user", type, content, timestamp)
+-- VALUES (
+--     'seed-1',
+--     'default-room',
+--     'System',
+--     'text',
+--     'Welcome to the chat! 👋',
+--     NOW()
+-- )
+-- ON CONFLICT (id) DO NOTHING;

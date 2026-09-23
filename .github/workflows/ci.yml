@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 仅做质量门禁：类型检查 / lint / 单测 / 构建。
+# 数据库迁移与 Edge Function 部署已交由 Supabase GitHub App（关联仓库后自动应用），
+# 因此本 workflow 不再触碰 SUPABASE_* 密钥，也不会重复应用迁移。
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npx vitest run
+
+      # 注意：构建所需的 NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_KEY 等变量
+      # 全部在 Cloudflare Pages 控制台配置（作为构建环境变量），不放在 GitHub Secrets。
+      # 此处仅做质量门禁，缺失这些变量不影响编译通过（代码均以 ?? '' 兜底）。
+      - name: Build
+        run: npm run build

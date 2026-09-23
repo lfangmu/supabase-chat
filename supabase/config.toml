@@ -1,0 +1,15 @@
+# For detailed configuration, documentation visit:
+# https://supabase.com/docs/guides/local-development/cli/config
+# https://supabase.com/docs/guides/deployment/branching/configuration
+
+[api]
+# Schemas to expose in the API.
+schemas = ["public"]
+
+[db]
+# Major Postgres version.
+major_version = 15
+
+[realtime]
+# Enable Realtime for all tables in the "public" schema
+enabled = true

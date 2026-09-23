@@ -1,28 +1,86 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
-import { Message } from '@/types';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { Message, Reaction } from '@/types';
+import { AlertCircle, SmilePlus } from 'lucide-react';
+import { useSignedUrl } from '@/hooks/useSignedUrl';
+import Avatar from './Avatar';
+import EmojiPicker from './EmojiPicker';
+import { formatClock } from '@/utils/date-utils';
 import TextMessage from './message-types/TextMessage';
 import ImageMessage from './message-types/ImageMessage';
 import VideoMessage from './message-types/VideoMessage';
 import VoiceMessage from './message-types/VoiceMessage';
+import FileMessage from './message-types/FileMessage';
+
+/** 微信撤回时限：2 分钟 */
+export const WITHDRAW_WINDOW_MS = 2 * 60 * 1000;
 
 interface MessageItemProps {
   message: Message;
   user: string;
-  onWithdraw: (timestamp: string) => void;
+  onWithdraw: (id: string) => void;
+  onRetry: (id: string) => void;
   onQuote?: (message: Message) => void;
+  onEdit?: (id: string, newContent: string) => void;
+  onDelete?: (id: string) => void;
+  onForward?: (message: Message) => void;
+  /** 1:1 私聊隐藏每条消息顶部的昵称+时间（群聊保留） */
+  isDM?: boolean;
+  /** 头像 URL（按昵称查表得到） */
+  avatarUrl?: string | null;
+  /** REQ-001: 该消息的表情回应聚合 */
+  reactions?: Reaction[];
+  /** 切换某条消息的某个 emoji 回应 */
+  onToggleReaction?: (messageId: string, emoji: string) => void;
+  /** 全局搜索跳转后被高亮定位（短暂强调） */
+  highlight?: boolean;
 }
 
-const MessageItem: React.FC<MessageItemProps> = React.memo(({ message, user, onWithdraw, onQuote }) => {
+const MessageItem: React.FC<MessageItemProps> = React.memo(({
+  message,
+  user,
+  onWithdraw,
+  onRetry,
+  onQuote,
+  onEdit,
+  onDelete,
+  onForward,
+  isDM = false,
+  avatarUrl = null,
+  reactions = [],
+  onToggleReaction,
+  highlight = false,
+}) => {
   const isSelf = message.user === user;
+  // 微信式：私聊不重复展示对方昵称与每条时间（群聊保留昵称）
+  const showName = !isDM;
+  const isFailed = message.sendStatus === 'failed';
+  const resolvedContentUrl = useSignedUrl(
+    message.type !== 'text' ? message.content : ''
+  );
   const [showMenu, setShowMenu] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const messageRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editContent, setEditContent] = useState(message.content);
+  const editInputRef = useRef<HTMLTextAreaElement>(null);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
 
   const handleWithdraw = () => {
-    onWithdraw(message.timestamp);
+    onWithdraw(message.id);
+    setShowMenu(false);
+  };
+
+  const handleDelete = () => {
+    onDelete?.(message.id);
+    setShowMenu(false);
+  };
+
+  const handleForward = () => {
+    onForward?.(message);
     setShowMenu(false);
   };
 
@@ -33,240 +91,412 @@ const MessageItem: React.FC<MessageItemProps> = React.memo(({ message, user, onW
     setShowMenu(false);
   };
 
-  const handleLongPress = (e: React.MouseEvent | React.TouchEvent) => {
+  const handleStartEdit = () => {
+    setEditContent(message.content);
+    setIsEditing(true);
+    setShowMenu(false);
+    setTimeout(() => editInputRef.current?.focus(), 0);
+  };
+
+  const handleSaveEdit = () => {
+    const trimmed = editContent.trim();
+    if (trimmed && trimmed !== message.content && onEdit) {
+      onEdit(message.id, trimmed);
+    }
+    setIsEditing(false);
+  };
+
+  const handleCancelEdit = () => {
+    setEditContent(message.content);
+    setIsEditing(false);
+  };
+
+  const handleLongPress = useCallback((e: React.MouseEvent | React.TouchEvent | MouseEvent | TouchEvent) => {
     if (messageRef.current) {
       const rect = messageRef.current.getBoundingClientRect();
-      // 计算菜单位置，确保在可视区域内
       let menuX = rect.left + rect.width / 2;
       let menuY = rect.top;
-      
-      // 估算菜单宽度和高度
+
       const estimatedMenuWidth = 320;
       const estimatedMenuHeight = 40;
       const windowWidth = window.innerWidth;
-      const windowHeight = window.innerHeight;
-      
-      // 调整水平位置，确保菜单不超出屏幕
+
       if (menuX - estimatedMenuWidth / 2 < 0) {
         menuX = estimatedMenuWidth / 2;
       } else if (menuX + estimatedMenuWidth / 2 > windowWidth) {
         menuX = windowWidth - estimatedMenuWidth / 2;
       }
-      
-      // 调整垂直位置，确保菜单不超出屏幕
-      if (menuY - estimatedMenuHeight < 60) { // 60px 为顶部安全区域
-        // 显示在消息下方
+
+      if (menuY - estimatedMenuHeight < 60) {
         menuY = rect.bottom;
       } else {
-        // 显示在消息上方
         menuY = rect.top - estimatedMenuHeight;
       }
-      
-      setMenuPosition({
-        x: menuX,
-        y: menuY
-      });
+
+      setMenuPosition({ x: menuX, y: menuY });
       setShowMenu(true);
     }
-  };
+  }, []);
 
-  const handleClickOutside = (e: MouseEvent) => {
-    if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-      setShowMenu(false);
+  const clearLongPressTimer = useCallback(() => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
     }
-  };
+  }, []);
 
+  // Cleanup timer on unmount
   useEffect(() => {
-    if (showMenu) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => {
-        document.removeEventListener('mousedown', handleClickOutside);
-      };
-    }
+    return () => clearLongPressTimer();
+  }, [clearLongPressTimer]);
+
+  // Click outside to close menu + keyboard support
+  useEffect(() => {
+    if (!showMenu) return;
+
+    const handleClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setShowMenu(false);
+      }
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowMenu(false);
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
   }, [showMenu]);
+
+  // === 已撤回：渲染成微信式居中系统提示，不再展示原内容 ===
+  if (message.withdrawn_at) {
+    return (
+      <div className="flex justify-center my-2 animate-fadeIn">
+        <span className="px-2.5 py-1 rounded-md bg-muted/70 text-[11px] text-muted-foreground">
+          {isSelf ? '你撤回了一条消息' : `${message.user} 撤回了一条消息`}
+        </span>
+      </div>
+    );
+  }
+
+  // 撤回时限：超过 2 分钟不再提供撤回入口（服务端也会二次校验）
+  const withinWithdrawWindow =
+    Date.now() - new Date(message.timestamp).getTime() < WITHDRAW_WINDOW_MS;
+
+  const renderQuote = () => {
+    if (!message.quote) return null;
+    return (
+      <div className={`mb-1 px-2 py-1.5 rounded-lg border-l-2 ${
+        isSelf
+          ? 'bg-black/10 border-black/20'
+          : 'bg-muted border-border'
+      }`}>
+        <div className={`text-xs font-medium ${isSelf ? 'text-[#1f1f1f] dark:text-white' : 'text-muted-foreground'}`}>
+          {message.quote.user}
+        </div>
+        <div className="text-xs text-foreground/70 truncate">
+          {message.quote.type === 'text'
+            ? message.quote.content
+            : `[${message.quote.type === 'image' ? '图片' : message.quote.type === 'video' ? '视频' : message.quote.type === 'file' ? '文件' : '语音'}]`}
+        </div>
+      </div>
+    );
+  };
 
   const renderMessageContent = () => {
     switch (message.type) {
-      case 'text':
-        return <TextMessage message={message} isSelf={isSelf} />;
       case 'image':
         return <ImageMessage message={message} isSelf={isSelf} />;
       case 'video':
         return <VideoMessage message={message} isSelf={isSelf} />;
       case 'voice':
         return <VoiceMessage message={message} isSelf={isSelf} />;
-      default:
+      case 'file':
+        return <FileMessage message={message} isSelf={isSelf} />;
+      case 'text':
         return <TextMessage message={message} isSelf={isSelf} />;
+      default:
+        return null;
     }
   };
 
   return (
-    <div key={message.timestamp} className={`flex ${isSelf ? 'justify-end' : 'justify-start'} animate-fadeIn mb-3`}>
+    <div className={`flex ${isSelf ? 'justify-end' : 'justify-start'} animate-fadeIn mb-2`}>
       <div className={`flex ${isSelf ? 'flex-row-reverse' : 'flex-row'} items-end gap-2`}>
-        {/* 头像占位 */}
-        <div className={`w-8 h-8 rounded-full ${isSelf ? 'bg-green-500' : 'bg-gray-300'} flex items-center justify-center flex-shrink-0`}>
-          <span className={`text-xs text-white font-medium`}>
-            {message.user.charAt(0).toUpperCase()}
-          </span>
-        </div>
-        
-        {/* 消息内容 */}
-        <div className="flex flex-col gap-1" style={{ maxWidth: '70%', width: '100%', display: 'grid', gridTemplateColumns: '1fr' }}>
-          {/* 用户名和时间 */}
+        {/* Avatar */}
+        <Avatar name={message.user} avatar={avatarUrl} size={36} className="ring-1 ring-border" />
+
+        {/* Message content */}
+        <div className={`flex flex-col gap-1 ${isFailed ? 'opacity-60' : ''}`} style={{ maxWidth: '70%', width: '100%' }}>
+          {/* Username and time (group chats only) */}
+          {showName && (
           <div className={`flex items-center gap-2 ${isSelf ? 'justify-end' : 'justify-start'}`}>
-            <span className={`text-xs font-medium ${isSelf ? 'text-gray-500' : 'text-gray-600'}`}>
+            <span className={`text-xs font-medium ${isSelf ? 'text-muted-foreground' : 'text-foreground/80'}`}>
               {message.user}
             </span>
-            <span className="text-[10px] text-gray-400">
-              {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            <span className="text-[10px] text-muted-foreground">
+              {formatClock(new Date(message.timestamp))}
             </span>
           </div>
-          
-          {/* 消息气泡 */}
-          <div 
-            ref={messageRef}
-            className="relative"
-            style={{
-              wordBreak: 'break-all',
-              overflowWrap: 'break-word',
-              whiteSpace: 'normal',
-              width: '100%'
-            }}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              handleLongPress(e);
-            }}
-            onMouseDown={(e) => {
-              // 模拟长按
-              const timer = setTimeout(() => {
+          )}
+
+          {/* Message bubble */}
+          {isEditing ? (
+            <div className="flex flex-col gap-1.5 w-full" style={{ maxWidth: '100%' }}>
+              <textarea
+                ref={editInputRef}
+                value={editContent}
+                onChange={(e) => setEditContent(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSaveEdit();
+                  }
+                  if (e.key === 'Escape') handleCancelEdit();
+                }}
+                className="w-full px-3 py-2 text-sm border border-primary rounded-xl bg-card text-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+                rows={Math.min(editContent.split('\n').length, 6)}
+                style={{ minHeight: '40px' }}
+              />
+              <div className="flex items-center gap-2 justify-end">
+                <span className="text-[10px] text-muted-foreground mr-auto">Esc 取消 · Enter 保存</span>
+                <button
+                  onClick={handleCancelEdit}
+                  className="px-2.5 py-1 text-xs rounded-lg bg-secondary text-foreground hover:opacity-80"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleSaveEdit}
+                  disabled={!editContent.trim() || editContent.trim() === message.content}
+                  className="px-2.5 py-1 text-xs rounded-lg bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  保存
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div
+              ref={messageRef}
+              className={`relative ${highlight ? 'rounded-xl ring-2 ring-primary bg-primary/10 transition-colors duration-300' : ''}`}
+              style={{ wordBreak: 'break-all', overflowWrap: 'break-word', whiteSpace: 'normal', width: '100%' }}
+              onContextMenu={(e) => {
+                e.preventDefault();
                 handleLongPress(e);
-              }, 500);
-              // 清除计时器的函数
-              const clearTimer = () => clearTimeout(timer);
-              // 添加鼠标抬起和离开事件监听器
-              document.addEventListener('mouseup', clearTimer);
-              document.addEventListener('mouseleave', clearTimer);
-              // 清理函数
-              return () => {
-                document.removeEventListener('mouseup', clearTimer);
-                document.removeEventListener('mouseleave', clearTimer);
-              };
-            }}
-            onTouchStart={(e) => {
-              // 模拟触摸长按
-              const timer = setTimeout(() => {
-                handleLongPress(e);
-              }, 500);
-              // 清除计时器的函数
-              const clearTimer = () => clearTimeout(timer);
-              // 添加触摸结束事件监听器
-              document.addEventListener('touchend', clearTimer);
-              // 清理函数
-              return () => {
-                document.removeEventListener('touchend', clearTimer);
-              };
-            }}
-          >
-            {renderMessageContent()}
-          </div>
+              }}
+              onMouseDown={(e) => {
+                clearLongPressTimer();
+                longPressTimerRef.current = setTimeout(() => handleLongPress(e), 500);
+                const clear = () => {
+                  clearLongPressTimer();
+                  document.removeEventListener('mouseup', clear);
+                  document.removeEventListener('mouseleave', clear);
+                };
+                document.addEventListener('mouseup', clear, { once: true });
+                document.addEventListener('mouseleave', clear, { once: true });
+              }}
+              onTouchStart={(e) => {
+                clearLongPressTimer();
+                longPressTimerRef.current = setTimeout(() => handleLongPress(e), 500);
+                const clear = () => {
+                  clearLongPressTimer();
+                  document.removeEventListener('touchend', clear);
+                };
+                document.addEventListener('touchend', clear, { once: true });
+              }}
+            >
+              {renderQuote()}
+              {renderMessageContent()}
+              {/* REQ-001: 添加表情回应弹层 */}
+              {showEmojiPicker && (
+                <div
+                  className="absolute z-50 mt-1"
+                  style={{ top: '100%', [isSelf ? 'right' : 'left']: 0 } as React.CSSProperties}
+                >
+                  <EmojiPicker
+                    onSelect={(emoji) => {
+                      onToggleReaction?.(message.id, emoji);
+                      setShowEmojiPicker(false);
+                    }}
+                    onClose={() => setShowEmojiPicker(false)}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* REQ-001: 表情回应聚合气泡 */}
+          {reactions.length > 0 && (
+            <div className={`flex flex-wrap gap-1 ${isSelf ? 'justify-end' : 'justify-start'}`}>
+              {(() => {
+                const groups = new Map<string, Reaction[]>();
+                for (const r of reactions) {
+                  const list = groups.get(r.emoji);
+                  if (list) list.push(r);
+                  else groups.set(r.emoji, [r]);
+                }
+                return Array.from(groups.entries()).map(([emoji, list]) => {
+                  const mine = list.some((r) => r.user === user);
+                  return (
+                    <button
+                      key={emoji}
+                      onClick={() => onToggleReaction?.(message.id, emoji)}
+                      aria-label={`${emoji} 回应，共 ${list.length} 人`}
+                      className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border transition-colors ${
+                        mine ? 'bg-primary/15 border-primary text-foreground' : 'bg-muted border-border text-foreground/80'
+                      }`}
+                    >
+                      <span className="text-sm leading-none">{emoji}</span>
+                      <span>{list.length}</span>
+                    </button>
+                  );
+                });
+              })()}
+            </div>
+          )}
+
+          {/* 私聊已读回执：仅自己发出的、已送达且被对方读过的消息展示 */}
+          {isDM && isSelf && !isFailed && message.sendStatus !== 'sending' && (
+            <span
+              className={`self-end text-[10px] leading-none ${
+                message.readByOther ? 'text-muted-foreground' : 'text-primary/70'
+              }`}
+            >
+              {message.readByOther ? '已读' : '未读'}
+            </span>
+          )}
+
+          {/* Failed message retry indicator */}
+          {isFailed && isSelf && (
+            <button
+              className={`flex items-center gap-1.5 text-sm text-destructive bg-destructive/10 hover:bg-destructive/20 active:scale-95 rounded-lg px-3 py-1.5 mt-1 transition-all ${
+                isSelf ? 'self-end' : 'self-start'
+              }`}
+              onClick={() => onRetry(message.id)}
+              aria-label="消息发送失败，点击重试"
+            >
+              <AlertCircle className="w-4 h-4" />
+              <span>发送失败，点击重试</span>
+            </button>
+          )}
         </div>
       </div>
 
-      {/* 弹出菜单 */}
+      {/* Context menu */}
       {showMenu && (
         <div
           ref={menuRef}
-          className="fixed z-50 bg-white dark:bg-gray-800 shadow-lg rounded-full border border-gray-200 dark:border-gray-700 py-2 px-4 flex items-center gap-4 whitespace-nowrap"
+          className="fixed z-50 bg-popover text-popover-foreground shadow-xl rounded-full border border-border py-2 px-4 flex items-center gap-3 whitespace-nowrap"
           style={{
             left: `${menuPosition.x}px`,
             top: `${menuPosition.y}px`,
-            transform: 'translateX(-50%)'
+            transform: 'translateX(-50%)',
           }}
+          role="menu"
+          aria-label="消息操作菜单"
         >
-          <div 
-            className="px-3 py-1 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full cursor-pointer"
+          <button
+            className="px-3 py-1 text-sm text-foreground hover:bg-muted rounded-full cursor-pointer transition-colors"
             onClick={handleQuote}
+            role="menuitem"
           >
             引用
-          </div>
-          <div 
-            className="px-3 py-1 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full cursor-pointer"
+          </button>
+          <button
+            className="px-3 py-1 text-sm text-foreground hover:bg-muted rounded-full cursor-pointer transition-colors flex items-center gap-1"
             onClick={() => {
-              // 实现复制功能
-              if (message.type === 'text') {
-                navigator.clipboard.writeText(message.content)
-                  .then(() => {
-                    console.log('复制成功');
-                  })
-                  .catch(err => {
-                    console.error('复制失败:', err);
-                  });
-              } else if (message.type === 'image' || message.type === 'video' || message.type === 'voice') {
-                navigator.clipboard.writeText(message.content)
-                  .then(() => {
-                    console.log('复制链接成功');
-                  })
-                  .catch(err => {
-                    console.error('复制失败:', err);
-                  });
-              }
+              setShowEmojiPicker(true);
               setShowMenu(false);
             }}
+            role="menuitem"
           >
-            复制
-          </div>
+            <SmilePlus className="w-3.5 h-3.5" />
+            添加回应
+          </button>
+          {message.type === 'text' && (
+            <button
+              className="px-3 py-1 text-sm text-foreground hover:bg-muted rounded-full cursor-pointer transition-colors"
+              onClick={() => {
+                navigator.clipboard.writeText(message.content).catch(() => {});
+                setShowMenu(false);
+              }}
+              role="menuitem"
+            >
+              复制
+            </button>
+          )}
           {message.type === 'image' && (
-            <div 
-              className="px-3 py-1 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full cursor-pointer"
+            <button
+              className="px-3 py-1 text-sm text-foreground hover:bg-muted rounded-full cursor-pointer transition-colors"
               onClick={async () => {
-                // 实现保存图片功能
+                if (!resolvedContentUrl) return;
                 try {
-                  // 获取图片数据
-                  const response = await fetch(message.content);
+                  const response = await fetch(resolvedContentUrl);
                   const blob = await response.blob();
-                  
-                  // 创建临时 URL
                   const blobUrl = URL.createObjectURL(blob);
-                  
-                  // 创建下载链接
                   const link = document.createElement('a');
                   link.href = blobUrl;
                   link.download = `image-${Date.now()}.jpg`;
-                  
-                  // 触发下载
                   document.body.appendChild(link);
                   link.click();
-                  
-                  // 清理
                   setTimeout(() => {
                     document.body.removeChild(link);
                     URL.revokeObjectURL(blobUrl);
                   }, 100);
-                  
-                  setShowMenu(false);
-                } catch (error) {
-                  console.error('保存图片失败:', error);
-                  // 降级方案：使用原始方式
+                } catch {
                   const link = document.createElement('a');
-                  link.href = message.content;
+                  link.href = resolvedContentUrl;
                   link.download = `image-${Date.now()}.jpg`;
                   document.body.appendChild(link);
                   link.click();
                   document.body.removeChild(link);
-                  setShowMenu(false);
                 }
+                setShowMenu(false);
               }}
+              role="menuitem"
             >
               保存图片
-            </div>
+            </button>
           )}
-          {isSelf && (
-            <div 
-              className="px-3 py-1 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full cursor-pointer"
+          {onForward && (
+            <button
+              className="px-3 py-1 text-sm text-foreground hover:bg-muted rounded-full cursor-pointer transition-colors"
+              onClick={handleForward}
+              role="menuitem"
+            >
+              转发
+            </button>
+          )}
+          {isSelf && message.type === 'text' && (
+            <button
+              className="px-3 py-1 text-sm text-foreground hover:bg-muted rounded-full cursor-pointer transition-colors"
+              onClick={handleStartEdit}
+              role="menuitem"
+            >
+              编辑
+            </button>
+          )}
+          {isSelf && withinWithdrawWindow && (
+            <button
+              className="px-3 py-1 text-sm text-foreground hover:bg-muted rounded-full cursor-pointer transition-colors"
               onClick={handleWithdraw}
+              role="menuitem"
             >
               撤回
-            </div>
+            </button>
+          )}
+          {isSelf && onDelete && (
+            <button
+              className="px-3 py-1 text-sm text-destructive hover:bg-destructive/10 rounded-full cursor-pointer transition-colors"
+              onClick={handleDelete}
+              role="menuitem"
+            >
+              删除
+            </button>
           )}
         </div>
       )}

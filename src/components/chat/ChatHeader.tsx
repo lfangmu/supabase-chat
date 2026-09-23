@@ -1,56 +1,181 @@
 'use client';
 
-import React from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import { ChevronLeft, MoreHorizontal, Users, LogOut, Search, X } from 'lucide-react';
+import { PresenceUser } from '@/hooks/usePresence';
+import ThemeToggle from '@/components/chat/ThemeToggle';
+import Avatar from '@/components/chat/Avatar';
 
 interface ChatHeaderProps {
-  roomId: string;
-  onLogout: () => void;
-  onEditNickname: () => void;
-  onShare: () => void;
+  roomName?: string;
+  onlineUsers?: PresenceUser[];
+  isDM?: boolean;
+  dmOtherUser?: string | null;
+  dmOtherAvatar?: string | null;
+  /** 群成员数（群聊标题后缀，微信风格） */
+  memberCount?: number;
+  /** 对方是否正在输入（私聊时替换在线状态显示） */
+  otherTyping?: boolean;
+  onBack: () => void;
+  /** 群聊：打开群聊信息面板 */
+  onOpenMembers?: () => void;
+  /** 删除/退出/隐藏当前会话（群聊=退出群聊；私聊=从自己列表隐藏） */
+  onDeleteRoom?: () => void;
+  /** 消息搜索：是否展开搜索框 */
+  searchOpen?: boolean;
+  /** 搜索关键词 */
+  searchQuery?: string;
+  /** 切换搜索框展开 */
+  onToggleSearch?: () => void;
+  /** 搜索关键词变化 */
+  onSearchChange?: (q: string) => void;
 }
 
-const ChatHeader: React.FC<ChatHeaderProps> = React.memo(({ roomId, onLogout, onEditNickname, onShare }) => {
+const ChatHeader: React.FC<ChatHeaderProps> = React.memo(({
+  roomName,
+  onlineUsers = [],
+  isDM = false,
+  dmOtherUser = null,
+  dmOtherAvatar = null,
+  memberCount = 0,
+  otherTyping = false,
+  onBack,
+  onOpenMembers,
+  onDeleteRoom,
+  searchOpen = false,
+  searchQuery = '',
+  onToggleSearch,
+  onSearchChange,
+}) => {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // 菜单打开时：外部点击 / Esc 关闭
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menuOpen]);
+
   return (
-    <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-3 text-center shadow-sm">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center">
-            <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-            </svg>
+    <header className="flex items-center justify-between px-2 h-12 flex-shrink-0 bg-card border-b border-border safe-area-inset-top">
+      {/* Left: Back button (hidden on desktop where the sidebar is always visible) */}
+      <div className="flex items-center gap-1 min-w-[50px] lg:hidden">
+        <button
+          onClick={onBack}
+          className="w-11 h-11 rounded-lg flex items-center justify-center text-foreground hover:bg-muted active:bg-muted/80 transition-colors"
+          aria-label="返回消息列表"
+        >
+          <ChevronLeft className="w-6 h-6" strokeWidth={2.5} />
+        </button>
+      </div>
+
+      {/* Center: Title / Search */}
+      <div className="flex-1 min-w-0 flex justify-center">
+        {searchOpen ? (
+          <div className="flex-1 flex items-center gap-2 px-1 min-w-0">
+            <Search className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+            <input
+              autoFocus
+              value={searchQuery}
+              onChange={(e) => onSearchChange?.(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Escape') onToggleSearch?.(); }}
+              placeholder="搜索聊天记录"
+              className="flex-1 min-w-0 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+              aria-label="搜索聊天记录"
+            />
+            <button
+              onClick={onToggleSearch}
+              className="w-8 h-8 rounded-md flex items-center justify-center text-muted-foreground hover:bg-muted transition-colors flex-shrink-0"
+              aria-label="关闭搜索"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
-          <h1 className="text-base font-semibold text-gray-800 dark:text-gray-200 truncate">
-            {roomId !== 'default-room' ? `聊天室 ${roomId}` : '聊天室'}
-          </h1>
-        </div>
-        <div className="flex items-center gap-2">
+        ) : isDM && dmOtherUser ? (
+          <div className="flex items-center gap-2 min-w-0">
+            <Avatar name={dmOtherUser} avatar={dmOtherAvatar} size={32} />
+            <div className="text-left min-w-0">
+              <div className="text-[16px] font-semibold text-foreground truncate leading-tight">{dmOtherUser}</div>
+              <div className="text-[11px] text-muted-foreground leading-tight">
+                {otherTyping
+                  ? '对方正在输入…'
+                  : onlineUsers.some((u) => u.nickname === dmOtherUser)
+                    ? '在线'
+                    : '离线'}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="text-center min-w-0">
+            <div className="text-[16px] font-semibold text-foreground truncate">
+              {roomName || '群聊'}
+              {memberCount > 0 && (
+                <span className="text-muted-foreground font-normal">（{memberCount}）</span>
+              )}
+            </div>
+            {onlineUsers.length > 0 && (
+              <div className="text-[11px] text-muted-foreground">
+                {onlineUsers.length} 人在线
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Right: Action buttons */}
+      <div className="flex items-center gap-0.5 min-w-[50px] justify-end">
+        {onToggleSearch && (
           <button
-            onClick={onShare}
-            className="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800"
-            title="分享链接"
+            onClick={onToggleSearch}
+            className="w-11 h-11 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-muted active:bg-muted/80 transition-colors"
+            aria-label="搜索聊天记录"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
-            </svg>
+            <Search className="w-[18px] h-[18px]" />
           </button>
+        )}
+        <ThemeToggle />
+        <div className="relative" ref={menuRef}>
           <button
-            onClick={onEditNickname}
-            className="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800"
-            title="修改昵称"
+            onClick={() => setMenuOpen((v) => !v)}
+            className="w-11 h-11 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-muted active:bg-muted/80 transition-colors"
+            aria-label="更多操作"
+            aria-expanded={menuOpen}
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-            </svg>
+            <MoreHorizontal className="w-5 h-5" />
           </button>
-          <button
-            onClick={onLogout}
-            className="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800"
-            title="退出"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-            </svg>
-          </button>
+          {menuOpen && (
+            <div className="absolute top-10 right-0 z-50 w-44 bg-card rounded-xl shadow-lg border border-border py-1.5 animate-in fade-in slide-in-from-top-1 duration-150">
+              {!isDM && onOpenMembers && (
+                <button
+                  onClick={() => { setMenuOpen(false); onOpenMembers(); }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-muted transition-colors text-left"
+                >
+                  <Users className="w-4 h-4 text-muted-foreground" />
+                  <span className="text-sm text-foreground">群聊信息</span>
+                </button>
+              )}
+              {onDeleteRoom && (
+                <button
+                  onClick={() => { setMenuOpen(false); onDeleteRoom(); }}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-destructive/10 transition-colors text-left ${!isDM ? 'border-t border-border' : ''}`}
+                >
+                  <LogOut className="w-4 h-4 text-destructive" />
+                  <span className="text-sm text-destructive">{isDM ? '删除私聊' : '退出群聊'}</span>
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </header>

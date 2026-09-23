@@ -1,276 +1,212 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import { createClient } from '@supabase/supabase-js';
-import { Message } from '@/types';
-import { MESSAGE_CONFIG, STORAGE_CONFIG_KEYS } from '@/config';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Message, Reaction } from '@/types';
+import { useMessageLoader } from './useMessageLoader';
+import { useMessageRealtime } from './useMessageRealtime';
+import { useMessageActions } from './useMessageActions';
+import { useTypingIndicator } from './useTypingIndicator';
+import { useReadReceipts } from './useReadReceipts';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_KEY!
-);
+interface UseMessagesParams {
+  currentUser?: string;
+  roomName?: string;
+  onRoomUpdated?: () => void;
+  onMessageSent?: () => void;
+  onExternalMessage?: (roomId: string, message: Message) => void;
+  roomIds?: string[];
+  onNewDM?: (roomId: string) => void;
+  isDM?: boolean;
+  isActive?: boolean;
+}
 
-const PAGE_SIZE = MESSAGE_CONFIG.PAGE_SIZE;
+export const useMessages = (roomId: string, onRoomDeleted?: (roomId: string) => void, params?: UseMessagesParams) => {
+  const [typingUsers, setTypingUsers] = useState<string[]>([]);
+  const typingTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const processedIdsRef = useRef<Set<string>>(new Set());
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const messagesRef = useRef<Message[]>([]);
 
-export const useMessages = (roomId: string) => {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(true);
-
-  // 初次加载：数据库优先 + 本地缓存合并
+  // REQ-001: 表情回应（按 messageId 聚合）
+  const [reactionsByMessage, setReactionsByMessage] = useState<Record<string, Reaction[]>>({});
+  const reactionsRef = useRef<Record<string, Reaction[]>>({});
   useEffect(() => {
-    const cacheKey = `${STORAGE_CONFIG_KEYS.MESSAGES_PREFIX}${roomId}`;
-    const cached = localStorage.getItem(cacheKey);
-    let initial = cached ? JSON.parse(cached) : [];
+    reactionsRef.current = reactionsByMessage;
+  }, [reactionsByMessage]);
 
-    setMessages(initial);
+  // Message loading (DB + cache merge, pagination, sync)
+  const { messages, setMessages, loadingMore, hasMore, loadMoreHistory, isLoading, syncNewMessages } = useMessageLoader({
+    roomId,
+    processedIdsRef,
+    abortControllerRef,
+  });
 
-    supabase
-      .from('messages')
-      .select('*')
-      .eq('room_id', roomId)
-      .order('timestamp', { ascending: false })
-      .limit(PAGE_SIZE)
-      .then(({ data, error }) => {
-        if (error) {
-          console.error('加载历史失败:', error);
-          return;
+  // REQ-001: 收到他人的表情回应广播时，更新本地聚合
+  const handleReactionUpdate = useCallback((messageId: string, reactions: Reaction[]) => {
+    setReactionsByMessage((prev) => ({ ...prev, [messageId]: reactions }));
+  }, []);
+
+  // Keep messagesRef in sync
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  // Realtime broadcast subscription (onSync triggers DB catch-up after reconnect)
+  const { channelRef, globalChannelRef } = useMessageRealtime({
+    roomId,
+    setMessages,
+    setTypingUsers,
+    processedIdsRef,
+    typingTimersRef,
+    onRoomDeleted,
+    onRoomUpdated: params?.onRoomUpdated,
+    currentUser: params?.currentUser,
+    roomName: params?.roomName,
+    onSync: syncNewMessages,
+    onExternalMessage: params?.onExternalMessage,
+    roomIds: params?.roomIds,
+    onNewDM: params?.onNewDM,
+    onReaction: handleReactionUpdate,
+  });
+
+  // Additional safety: sync from DB when app becomes visible (mobile resume)
+  const lastSyncRef = useRef(0);
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        const now = Date.now();
+        if (now - lastSyncRef.current > 3000) {
+          lastSyncRef.current = now;
+          syncNewMessages();
         }
-        if (data) {
-          const dbMessages = data.reverse();
-          const map = new Map<string, Message>();
-          dbMessages.forEach(msg => {
-            const key = `${msg.timestamp}-${msg.content}`;
-            map.set(key, msg);
-          });
-          const merged = Array.from(map.values()).sort((a, b) =>
-            new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-          );
-          setMessages(merged);
-          localStorage.setItem(cacheKey, JSON.stringify(merged));
-          setHasMore(data.length === PAGE_SIZE);
-        }
-      });
-  }, [roomId]);
-
-  // 向上拉加载更多
-  const loadMoreHistory = useCallback(async () => {
-    // 使用 ref 来获取最新的 messages 状态，避免依赖循环
-    let oldestTime: string | null = null;
-    let hasMessages = false;
-    
-    // 临时获取 messages 状态
-    setMessages(prev => {
-      hasMessages = prev.length > 0;
-      if (hasMessages) {
-        oldestTime = prev[0].timestamp;
       }
-      return prev;
-    });
-    
-    if (loadingMore || !hasMore || !hasMessages || !oldestTime) return;
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [syncNewMessages]);
 
-    setLoadingMore(true);
+  // Manual refresh (pull-to-refresh)
+  const refreshMessages = useCallback(async () => {
+    lastSyncRef.current = Date.now();
+    return syncNewMessages();
+  }, [syncNewMessages]);
 
-    const { data, error } = await supabase
-      .from('messages')
-      .select('*')
-      .eq('room_id', roomId)
-      .lt('timestamp', oldestTime)
-      .order('timestamp', { ascending: false })
-      .limit(PAGE_SIZE);
+  // Message actions (send, retry, withdraw, edit)
+  const { sendMessage, retryMessage, withdrawMessage, editMessage } = useMessageActions({
+    roomId,
+    setMessages,
+    channelRef,
+    globalChannelRef,
+    processedIdsRef,
+    messagesRef,
+    onMessageSent: params?.onMessageSent,
+  });
 
-    if (error) {
-      console.error('加载更多失败:', error);
-      setLoadingMore(false);
-      return;
-    }
+  // Typing indicators
+  const { sendTypingStart, sendTypingStop } = useTypingIndicator({ channelRef });
 
-    if (data) {
-      if (data.length < PAGE_SIZE) setHasMore(false);
+  // 已读回执（仅私聊）
+  const { fetchReadState } = useReadReceipts({
+    roomId,
+    currentUser: params?.currentUser || '',
+    isDM: !!params?.isDM,
+    isActive: !!params?.isActive,
+    messages,
+    channelRef,
+    setMessages,
+    messagesRef,
+  });
 
-      const olderData = data.reverse();
-
-      setMessages(prev => {
-        const map = new Map<string, Message>();
-        [...olderData, ...prev].forEach(msg => {
-          const key = `${msg.timestamp}-${msg.content}`;
-          map.set(key, msg);
-        });
-        const merged = Array.from(map.values()).sort((a, b) =>
-          new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+  // REQ-001: 加载 + 切换表情回应
+  // 全局搜索跳转：按 id 精准加载单条消息（可能未在当前已加载窗口内）。
+  // 校验由 API 端 isRoomParticipant 完成；成功后插入消息列表并去重排序。
+  const loadMessageById = useCallback(async (messageId: string): Promise<Message | null> => {
+    try {
+      const res = await fetch(`/api/messages/by-id?id=${encodeURIComponent(messageId)}`);
+      const data = await res.json();
+      if (!data.success || !data.message) return null;
+      const msg = data.message as Message;
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === msg.id)) return prev;
+        const merged = [...prev, { ...msg, sendStatus: 'sent' as const }].sort(
+          (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
         );
-        localStorage.setItem(`${STORAGE_CONFIG_KEYS.MESSAGES_PREFIX}${roomId}`, JSON.stringify(merged));
         return merged;
       });
+      return msg;
+    } catch {
+      return null;
     }
-    setLoadingMore(false);
-  }, [loadingMore, hasMore, roomId]);
+  }, [setMessages]);
 
-  // 实时广播 + 撤回同步
-  useEffect(() => {
-    const channelName = `chat-room:${roomId}`;
+  const loadReactions = useCallback(async (rid: string) => {
+    try {
+      const res = await fetch(`/api/messages/reactions?roomId=${encodeURIComponent(rid)}`);
+      const data = await res.json();
+      if (data.success) setReactionsByMessage(data.reactions || {});
+    } catch {
+      /* 离线时忽略，下次进入房间再加载 */
+    }
+  }, []);
 
-    const channel = supabase.channel(channelName, {
-      config: { broadcast: { self: true } },
+  const toggleReaction = useCallback(async (messageId: string, emoji: string) => {
+    const me = (params?.currentUser || '').trim();
+    if (!me) return;
+    // 乐观更新
+    setReactionsByMessage((prev) => {
+      const list = prev[messageId] || [];
+      const has = list.some((r) => r.user === me && r.emoji === emoji);
+      const next = has
+        ? list.filter((r) => !(r.user === me && r.emoji === emoji))
+        : [...list, { id: 'optimistic', message_id: messageId, user: me, emoji, created_at: new Date().toISOString() }];
+      return { ...prev, [messageId]: next };
     });
-
-    // 独立调用 subscribe，不作为 cleanup 返回值
-    channel.subscribe();
-
-    // 监听新消息
-    channel.on('broadcast', { event: 'chat-message' }, ({ payload }) => {
-      setMessages(prev => {
-        if (prev.some(m => m.timestamp === payload.timestamp && m.content === payload.content)) return prev;
-        return [...prev, payload];
+    try {
+      const res = await fetch('/api/messages/reactions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messageId, emoji }),
       });
-    });
-
-    // 监听撤回事件
-    channel.on('broadcast', { event: 'withdraw-message' }, ({ payload }) => {
-      const withdrawTimestamp = payload.timestamp;
-      setMessages(prev => {
-        const filtered = prev.filter(m => m.timestamp !== withdrawTimestamp);
-        localStorage.setItem(`chat_messages_${roomId}`, JSON.stringify(filtered));
-        return filtered;
-      });
-    });
-
-    // cleanup 只 unsubscribe
-    return () => {
-      channel.unsubscribe();
-    };
-  }, [roomId]);
-
-  // 发送消息
-  const sendMessage = useCallback((message: Message) => {
-    // 立即显示
-    setMessages(prev => {
-      if (prev.some(m => m.timestamp === message.timestamp && m.content === message.content)) return prev;
-      return [...prev, message];
-    });
-
-    // 实时广播
-    supabase.channel(`chat-room:${roomId}`).send({
-      type: 'broadcast',
-      event: 'chat-message',
-      payload: message,
-    });
-
-    // 写入数据库
-    supabase
-      .from('messages')
-      .insert([{
-        room_id: roomId,
-        user: message.user,
-        type: message.type,
-        content: message.content,
-        timestamp: message.timestamp,
-      }])
-      .then(({ error }) => {
-        if (error) console.error('写入失败:', error);
-      });
-  }, [roomId]);
-
-  // 撤回消息
-  const withdrawMessage = useCallback((timestamp: string) => {
-    // 本地撤回
-    setMessages(prev => {
-      // 找到要撤回的消息
-      const messageToWithdraw = prev.find(m => m.timestamp === timestamp);
-      
-      // 过滤掉要撤回的消息
-          const filtered = prev.filter(m => m.timestamp !== timestamp);
-          localStorage.setItem(`${STORAGE_CONFIG_KEYS.MESSAGES_PREFIX}${roomId}`, JSON.stringify(filtered));
-      
-      // 如果是图片或视频消息，删除对应的文件
-      if (messageToWithdraw && (messageToWithdraw.type === 'image' || messageToWithdraw.type === 'video')) {
-        // 从签名 URL 中提取文件路径
-        const contentUrl = messageToWithdraw.content;
-        try {
-          // 处理 Supabase 存储的文件
-          // 从消息中获取文件路径（直接使用存储时的路径格式）
-          // 注意：这里假设消息的 content 字段是签名 URL，我们需要从 URL 中提取文件路径
-          // 对于 Supabase 生成的签名 URL，格式通常是：https://<project>.supabase.co/storage/v1/object/public/<bucket>/<path>
-          
-          let filePath = '';
-          
-          // 尝试解析 URL
-          const url = new URL(contentUrl);
-          const pathname = url.pathname;
-          
-          // 从路径中提取文件路径
-          // 匹配格式 1：/storage/v1/object/public/<bucket>/<path>
-          let match = pathname.match(/\/storage\/v1\/object\/public\/[^\/]+\/(.*)$/);
-          
-          // 匹配格式 2：/storage/v1/object/sign/<bucket>/<path>
-          if (!match) {
-            match = pathname.match(/\/storage\/v1\/object\/sign\/[^\/]+\/(.*)$/);
-          }
-          
-          if (match && match[1]) {
-            filePath = match[1];
-          } else {
-            // 尝试其他可能的格式
-            // 匹配格式：/object/<path>
-            const match2 = pathname.match(/\/object\/(.*)$/);
-            if (match2 && match2[1]) {
-              filePath = match2[1];
-            } else {
-              // 如果都匹配失败，尝试直接使用路径名
-              filePath = pathname;
-            }
-          }
-          
-          console.log('提取的文件路径:', filePath);
-          
-          // 删除 Supabase Storage 中的文件
-          supabase.storage
-            .from('chat-media')
-            .remove([filePath])
-            .then(({ error }) => {
-              if (error) {
-                console.error('删除文件失败:', error);
-              } else {
-                console.log('删除文件成功');
-              }
-            });
-        } catch (err) {
-          console.error('解析文件 URL 失败:', err);
-        }
+      const data = await res.json();
+      if (data.success) {
+        setReactionsByMessage((prev) => ({ ...prev, [messageId]: data.reactions }));
+        // 广播给同房间其他客户端
+        channelRef.current?.send({
+          type: 'broadcast',
+          event: 'chat-reaction',
+          payload: { messageId, reactions: data.reactions },
+        });
       }
-      
-      return filtered;
-    });
+    } catch {
+      /* 失败不回滚，下次加载会修正 */
+    }
+  }, [params?.currentUser, channelRef]);
 
-    // 广播撤回事件（让其他在线用户同步撤回）
-    supabase.channel(`chat-room:${roomId}`).send({
-      type: 'broadcast',
-      event: 'withdraw-message',
-      payload: { timestamp },
-    });
-
-    // 数据库删除
-    supabase
-      .from('messages')
-      .delete()
-      .eq('room_id', roomId)
-      .eq('timestamp', timestamp)
-      .then(({ error }) => {
-        if (error) {
-          console.error('撤回失败:', error);
-        } else {
-          console.log('撤回成功');
-        }
-      });
-  }, [roomId]);
+  // 切换房间时重置并加载该房间的表情回应
+  useEffect(() => {
+    setReactionsByMessage({});
+    loadReactions(roomId);
+  }, [roomId, loadReactions]);
 
   return {
     messages,
     loadingMore,
     hasMore,
+    isLoading,
+    typingUsers,
+    channelRef,
     loadMoreHistory,
+    refreshMessages,
     sendMessage,
+    retryMessage,
     withdrawMessage,
+    editMessage,
+    sendTypingStart,
+    sendTypingStop,
+    fetchReadState,
+    reactionsByMessage,
+    toggleReaction,
+    loadReactions,
+    loadMessageById,
   };
 };

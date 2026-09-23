@@ -3,7 +3,11 @@ import type { Config } from "tailwindcss";
 const config = {
   content: ["./src/**/*.{ts,tsx}", "./src/components/**/*.{ts,tsx}"],
   prefix: "",
-  safelist: ["bg-blue-800", "bg-gray-600"],
+  safelist: [
+    "bg-background", "bg-card", "bg-primary", "bg-secondary",
+    "bg-muted", "bg-accent", "bg-destructive",
+    "text-foreground", "text-primary", "text-muted-foreground",
+  ],
   theme: {
     container: {
       center: true,
