@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
-import { extractSession } from '@/lib/auth';
+import { getAuthUser } from '@/lib/auth-user';
 import { MESSAGE_CONFIG } from '@/config';
 import { logAdminAction, getClientIpFromRequest } from '@/lib/audit';
 
@@ -10,24 +10,12 @@ export const runtime = 'edge';
 /**
  * GET /api/admin/messages?roomId=xxx[&before=ISO] — 管理后台：只读查看某房间消息（游标分页）。
  *
- * 鉴权：仅认 admin_session cookie（isAdmin:true）。只读，不提供写操作。
+ * 鉴权：middleware 已确保调用者为 users.role='admin'。这里再解析 actor 兜底校验一次。
  */
 export async function GET(request: NextRequest) {
   try {
-    const jwtSecret = process.env.CHAT_JWT_SECRET;
-    if (!jwtSecret) {
-      return NextResponse.json(
-        { success: false, message: '服务器配置错误' },
-        { status: 500 }
-      );
-    }
-
-    const session = await extractSession(
-      request.headers.get('cookie'),
-      jwtSecret,
-      'admin_session'
-    );
-    if (!session.valid || session.payload?.isAdmin !== true) {
+    const actor = await getAuthUser(request);
+    if (!actor) {
       return NextResponse.json(
         { success: false, message: '未认证的管理员会话' },
         { status: 401 }
@@ -89,23 +77,14 @@ export async function GET(request: NextRequest) {
 /**
  * DELETE /api/admin/messages — 管理后台：删除某房间内的单条消息（社区 moderation）。
  *
- * 鉴权：仅认 admin_session cookie（isAdmin:true）。
- * 数据安全：先按 id 取消息确认属于该 room（防止跨房间误删/越权删），快照内容用于审计，
- * 再用 service_role 删除。删除成功/失败均写入 audit_logs（delete_message / delete_message_failed）。
+ * 鉴权：middleware 已确保调用者为 admin。数据安全：先按 id 取消息确认属于该 room
+ * （防止跨房间误删/越权删），快照内容用于审计，再用 service_role 删除。删除成功/失败
+ * 均写入 audit_logs（delete_message / delete_message_failed）。
  */
 export async function DELETE(request: NextRequest) {
   try {
-    const jwtSecret = process.env.CHAT_JWT_SECRET;
-    if (!jwtSecret) {
-      return NextResponse.json({ success: false, message: '服务器配置错误' }, { status: 500 });
-    }
-
-    const session = await extractSession(
-      request.headers.get('cookie'),
-      jwtSecret,
-      'admin_session'
-    );
-    if (!session.valid || session.payload?.isAdmin !== true) {
+    const actor = await getAuthUser(request);
+    if (!actor) {
       return NextResponse.json({ success: false, message: '未认证的管理员会话' }, { status: 401 });
     }
 

@@ -19,35 +19,40 @@ import GroupMembersPanel from '@/components/chat/GroupMembersPanel';
 import Avatar from '@/components/chat/Avatar';
 import { getDMOtherUser } from '@/hooks/useDM';
 import NetworkBanner from '@/components/chat/NetworkBanner';
-import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import { useFriends } from '@/hooks/useFriends';
 import { useProfile } from '@/hooks/useProfile';
 import { useRoomMembers } from '@/hooks/useRoomMembers';
 import { Message } from '@/types';
 import { generateId } from '@/utils/id';
 import { getDeletedMessageIds, addDeletedMessageId } from '@/utils/deletedMessages';
+import { getClearedRooms, setClearedAt, isHiddenByClear } from '@/utils/clearedRooms';
 import { showSuccess, showError } from '@/utils/errorHandler';
 import { removeJoinedRoom } from '@/utils/joinedRooms';
-import { ROOM_CONFIG } from '@/config';
+import { ROOM_CONFIG, STORAGE_CONFIG_KEYS } from '@/config';
+import type { CurrentUser } from '@/lib/identity';
 
 interface ChatAppProps {
+  /** Supabase Auth 会话身份（UUID + 展示名），由 ChatClient 探测会话后传入 */
+  currentUser: CurrentUser;
   onLogout: () => void;
+  /** 改了展示名后，让父组件重新探测会话（拿回新的 display_name） */
+  onIdentityRefresh?: () => void;
 }
 
-export default function ChatApp({ onLogout }: ChatAppProps) {
+export default function ChatApp({ currentUser, onLogout, onIdentityRefresh }: ChatAppProps) {
   // === View state: list (room list) <-> chat (conversation) ===
   // 放在 useChat 之前：会话是否可见决定「已读回执」是否上报
   const [viewingChat, setViewingChat] = useState(false);
 
   const {
-    user, setUser, savedNickname, showNicknameInput,
     message, setMessage, messages,
     roomId, rooms,
     uploading, uploadingMessages,
     loadingMore, hasMore, isLoading,
     typingUsers, onlineUsers, recentUsers,
+    globalOnlineIds,
+    globalOnlineNicknames,
     quotedMessage, setQuotedMessage,
-    handleSetNickname,
     handleMessageChange, handleSendText, handleFileChange, handleVoiceUpload,
     loadMoreHistory, refreshMessages, retryMessage, handleWithdraw, handleEditMessage,
     switchRoom, createRoom, joinRoom,
@@ -64,26 +69,63 @@ export default function ChatApp({ onLogout }: ChatAppProps) {
     reactionsByMessage,
     toggleReaction,
     loadMessageById,
-  } = useChat(viewingChat);
+  } = useChat(viewingChat, currentUser);
 
-  const trimmedUser = user.trim();
-  const ready = !showNicknameInput && !!trimmedUser;
+  /** 我的 Supabase Auth UUID（身份） */
+  const myId = currentUser.userId;
+  /** 我的展示名（仅用于展示；绝不作为身份键） */
+  const trimmedUser = (currentUser.displayName || '').trim();
+  // 已登录（有 Supabase Auth UUID）即视为就绪；展示名为空时由「我」页面引导设置
+  const ready = !!myId;
 
   // === 好友系统 ===
   const {
     data: friendsData,
     sendRequest,
     respond,
+    removeOrBlock,
     load: reloadFriends,
-  } = useFriends({ user: trimmedUser, enabled: ready });
+  } = useFriends({ user: myId, enabled: ready });
 
   // === 用户资料（头像/签名）+ 昵称→头像映射 ===
-  const { me: myProfile, avatars, ensureProfiles, saveProfile } = useProfile(ready ? trimmedUser : '');
+  const { me: myProfile, avatars, namesById, ensureProfiles, saveProfile } = useProfile(
+    ready ? myId : '',
+    trimmedUser
+  );
+
+  /** UUID → 展示名（好友表 + 资料批量查询拼出来的兜底表） */
+  const displayNameOf = useCallback(
+    (uuid: string): string => namesById[uuid] || '',
+    [namesById]
+  );
+
+  /** 保存资料；改了展示名要让父组件重新探测会话，否则界面上的名字还是旧的 */
+  const handleSaveProfile = useCallback(
+    async (patch: { avatar?: string | null; signature?: string; display_name?: string }) => {
+      const saved = await saveProfile(patch);
+      if (saved && patch.display_name) onIdentityRefresh?.();
+      return saved;
+    },
+    [saveProfile, onIdentityRefresh]
+  );
+
+  /** 删除好友：只解除好友关系（微信语义：聊天记录留在本机，房间不删） */
+  const handleRemoveFriend = useCallback(
+    async (targetId: string) => {
+      const r = await removeOrBlock(targetId, 'remove');
+      if (r?.success) showSuccess('已删除好友');
+      else showError(r?.message || '删除失败');
+      await reloadFriends();
+    },
+    [removeOrBlock, reloadFriends]
+  );
 
   // 当前房间
   const currentRoom = rooms.find((r) => r.id === roomId);
   const isDM = currentRoom?.type === 'dm';
-  const dmOtherUser = isDM ? getDMOtherUser(roomId, trimmedUser) : null;
+  // 私聊对象：getDMOtherUser 返回对方 UUID，展示名从资料表解析
+  const dmOtherUserId = isDM ? getDMOtherUser(roomId, myId) : null;
+  const dmOtherUser = dmOtherUserId ? displayNameOf(dmOtherUserId) || null : null;
 
   // === 群成员 ===
   const {
@@ -137,52 +179,101 @@ export default function ChatApp({ onLogout }: ChatAppProps) {
   const [deletedIds, setDeletedIds] = useState<Set<string>>(() => new Set());
   useEffect(() => { setDeletedIds(getDeletedMessageIds()); }, []);
 
-  const visibleMessages = useMemo(
-    () => (deletedIds.size === 0 ? messages : messages.filter((m) => !deletedIds.has(m.id))),
-    [messages, deletedIds]
-  );
+  // === 已「清空聊天记录」的房间：roomId -> 清空时刻（ISO），早于该时刻的消息本机隐藏 ===
+  const [clearedRooms, setClearedRooms] = useState<Record<string, string>>(() => ({}));
+  useEffect(() => { setClearedRooms(getClearedRooms()); }, []);
+
+  const visibleMessages = useMemo(() => {
+    const clearedAt = clearedRooms[roomId] ?? null;
+    const noClear = !clearedAt;
+    if (deletedIds.size === 0 && noClear) return messages;
+    return messages.filter(
+      (m) => !deletedIds.has(m.id) && !isHiddenByClear(m.timestamp, clearedAt)
+    );
+  }, [messages, deletedIds, clearedRooms, roomId]);
 
   const handleDeleteMessage = useCallback((id: string) => {
     setDeletedIds(addDeletedMessageId(id));
   }, []);
+
+  /**
+   * 清空当前会话的聊天记录（微信语义：只清本机，不动服务器，不影响其他成员）。
+   * 服务端只负责鉴权 + 返回权威时间戳，客户端据此隐藏历史并清掉本地缓存。
+   */
+  const handleClearHistory = useCallback(async () => {
+    if (!roomId) return;
+    if (!window.confirm('确定清空聊天记录？\n\n只清除本机记录，其他成员的聊天记录不受影响；清空后新消息仍会正常显示。')) return;
+    try {
+      const res = await fetch('/api/messages/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roomId }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.success || typeof json.clearedAt !== 'string') {
+        showError(json?.message || '清空失败，请稍后重试');
+        return;
+      }
+      setClearedRooms(setClearedAt(roomId, json.clearedAt));
+      // 本房间的本地消息缓存一并清掉，避免下次进房先闪一下旧消息
+      try {
+        localStorage.removeItem(`${STORAGE_CONFIG_KEYS.MESSAGES_PREFIX}${roomId}`);
+      } catch {
+        /* localStorage 不可用时忽略 */
+      }
+      showSuccess('已清空聊天记录');
+    } catch {
+      showError('网络异常，清空失败');
+    }
+  }, [roomId]);
 
   // 群聊房间（非私聊）
   const groupRooms = useMemo(() => rooms.filter((r) => r.type !== 'dm'), [rooms]);
 
   // 好友列表：以好友表为准，并把已有私聊的对象补进来（历史数据兼容）
   const contactList = useMemo(() => {
-    const map = new Map<string, { nickname: string; avatar: string | null; signature: string }>();
-    for (const f of friendsData.friends) map.set(f.nickname, f);
+    // key = 用户 UUID（身份）；展示名单独存 display_name
+    const map = new Map<string, { id: string; display_name: string; avatar: string | null; signature: string }>();
+    for (const f of friendsData.friends) {
+      map.set(f.id, {
+        id: f.id,
+        display_name: f.display_name || '',
+        avatar: f.avatar ?? null,
+        signature: f.signature || '',
+      });
+    }
     for (const r of rooms) {
       if (r.type !== 'dm') continue;
-      const other = getDMOtherUser(r.id, trimmedUser);
+      const other = getDMOtherUser(r.id, myId);
       if (other && !map.has(other)) {
-        map.set(other, { nickname: other, avatar: avatars[other] ?? null, signature: '' });
+        const name = displayNameOf(other);
+        map.set(other, { id: other, display_name: name, avatar: name ? avatars[name] ?? null : null, signature: '' });
       }
     }
-    return Array.from(map.values()).sort((a, b) => a.nickname.localeCompare(b.nickname, 'zh'));
-  }, [friendsData.friends, rooms, trimmedUser, avatars]);
+    return Array.from(map.values()).sort((a, b) => a.display_name.localeCompare(b.display_name, 'zh'));
+  }, [friendsData.friends, rooms, myId, avatars, displayNameOf]);
 
   // 补齐头像：消息发送者 + 好友 + 私聊对象 + 群成员
   useEffect(() => {
     if (!ready) return;
-    const names = new Set<string>();
-    for (const m of messages) names.add(m.user);
-    for (const f of friendsData.friends) names.add(f.nickname);
+    // 注意：/api/users 按 UUID 批量查资料，所以这里收集的全部是 UUID
+    const ids = new Set<string>();
+    for (const m of messages) if (m.userId) ids.add(m.userId);
+    for (const f of friendsData.friends) ids.add(f.id);
     for (const r of rooms) {
       if (r.type === 'dm') {
-        const o = getDMOtherUser(r.id, trimmedUser);
-        if (o) names.add(o);
+        const o = getDMOtherUser(r.id, myId);
+        if (o) ids.add(o);
       }
-      if (r.last_message_user) names.add(r.last_message_user);
     }
-    ensureProfiles(Array.from(names));
-  }, [ready, messages, friendsData.friends, rooms, trimmedUser, ensureProfiles]);
+    for (const m of roomMembers) ids.add(m.id);
+    ensureProfiles(Array.from(ids));
+  }, [ready, messages, friendsData.friends, rooms, roomMembers, myId, ensureProfiles]);
 
   // 通讯录里点好友 → 打开与该好友的私聊会话
   const handleSelectFriend = useCallback(
-    (nickname: string) => {
-      handleStartDM(nickname);
+    (userId: string) => {
+      handleStartDM(userId);
       setViewingChat(true);
     },
     [handleStartDM]
@@ -259,7 +350,7 @@ export default function ChatApp({ onLogout }: ChatAppProps) {
       const res = await fetch('/api/rooms/members', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ roomId: targetRoomId, user: trimmedUser, target: trimmedUser }),
+        body: JSON.stringify({ roomId: targetRoomId, user: myId, target: myId }),
       });
       const data = await res.json();
       if (!data.success) {
@@ -276,7 +367,7 @@ export default function ChatApp({ onLogout }: ChatAppProps) {
       switchRoom(ROOM_CONFIG.DEFAULT_ROOM);
       setViewingChat(false);
     }
-  }, [roomId, trimmedUser, hideRoom, switchRoom, setRooms]);
+  }, [roomId, myId, hideRoom, switchRoom, setRooms]);
 
   // Android back button: push a history state when entering chat, intercept popstate
   useEffect(() => {
@@ -295,10 +386,8 @@ export default function ChatApp({ onLogout }: ChatAppProps) {
   }, [viewingChat]);
 
   // Logout: clear localStorage + call parent logout
+  // 登出：Supabase Auth 会话由父级（AuthScreen / ChatClient）统一处理
   const handleLogout = useCallback(() => {
-    try {
-      localStorage.removeItem('chat_nickname');
-    } catch { /* ignore */ }
     onLogout();
   }, [onLogout]);
 
@@ -309,15 +398,17 @@ export default function ChatApp({ onLogout }: ChatAppProps) {
     sendMessage({
       id: generateId(),
       user: trimmedUser,
+      userId: myId,
       type: src.type,
       content: src.content,
       timestamp: new Date().toISOString(),
       file_name: src.file_name ?? null,
       file_size: src.file_size ?? null,
       file_mime: src.file_mime ?? null,
+      forwardedFrom: src.id,
     });
     showSuccess('已转发');
-  }, [sendMessage, trimmedUser]);
+  }, [sendMessage, trimmedUser, myId]);
 
   const handlePickForwardTarget = useCallback((targetRoomId: string) => {
     const msg = forwardMsg;
@@ -422,85 +513,6 @@ export default function ChatApp({ onLogout }: ChatAppProps) {
   // 未处理的好友申请总数（通讯录 Tab 红点）
   const pendingFriendCount = friendsData.incoming.length;
 
-  // ==================== Onboarding / Nickname Edit Page ====================
-  if (showNicknameInput) {
-    return (
-      <div className="fixed inset-0 flex items-stretch justify-center z-50">
-        <div className="w-full max-w-2xl h-app flex flex-col items-center justify-center p-9 bg-background transition-all duration-300">
-          {/* Logo */}
-          <div className="w-20 h-20 rounded-2xl bg-primary flex items-center justify-center mb-7 shadow-lg shadow-primary/30">
-            <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-10 h-10">
-              <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-            </svg>
-          </div>
-
-          <h2 className="text-2xl font-bold text-foreground mb-2 tracking-tight">
-            {savedNickname ? '欢迎回来' : '设置你的昵称'}
-          </h2>
-          <p className="text-muted-foreground text-[15px] mb-7">
-            {savedNickname
-              ? '可直接使用上次昵称，或输入新昵称开始聊天'
-              : '请输入你的昵称开始聊天'}
-          </p>
-
-          <div className="w-full max-w-[300px] space-y-4">
-            <div className="relative">
-              <input
-                type="text"
-                value={user}
-                onChange={(e) => setUser(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && user.trim() && handleSetNickname()}
-                maxLength={20}
-                className="w-full h-[52px] px-[18px] border-[1.5px] border-input rounded-[14px] bg-card text-foreground text-base outline-none transition-all duration-200 focus:border-primary focus:ring-4 focus:ring-primary/10 placeholder:text-muted-foreground"
-                placeholder="输入你的昵称"
-                autoFocus
-              />
-              {user.length > 0 && (
-                <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
-                  {user.length}/20
-                </span>
-              )}
-            </div>
-
-            {savedNickname && (
-              <button
-                type="button"
-                onClick={() => setUser(savedNickname)}
-                className="w-full flex items-center justify-center gap-2 h-[44px] rounded-[14px] border border-dashed border-border bg-muted/40 text-muted-foreground hover:text-foreground hover:border-primary transition-colors duration-200"
-              >
-                <span className="text-xs">上次使用</span>
-                <span className="font-medium text-foreground truncate max-w-[180px]">
-                  {savedNickname}
-                </span>
-              </button>
-            )}
-
-            <button
-              onClick={handleSetNickname}
-              disabled={!user.trim()}
-              className={`w-full h-[52px] rounded-[14px] text-primary-foreground text-base font-semibold flex items-center justify-center gap-2 transition-all duration-200 ${
-                !user.trim()
-                  ? 'bg-muted text-muted-foreground cursor-not-allowed'
-                  : 'bg-primary hover:opacity-90 hover:-translate-y-0.5 hover:shadow-lg active:translate-y-0'
-              }`}
-            >
-              进入聊天
-              <ArrowRight className="w-4 h-4" strokeWidth={2.5} />
-            </button>
-          </div>
-
-          <div className="mt-5 flex items-center gap-1.5 text-xs text-muted-foreground">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="12" r="10" />
-              <path d="M12 16v-4M12 8h.01" />
-            </svg>
-            昵称将公开展示给群聊成员
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   // ==================== Desktop two-column / mobile single-column ====================
   return (
     <LightboxProvider images={imageUrls}>
@@ -520,15 +532,17 @@ export default function ChatApp({ onLogout }: ChatAppProps) {
                   unreadRoomIds={unreadRoomIds}
                   mentionedRoomIds={mentionedRoomIds}
                   unreadCounts={unreadCounts}
-                  currentUser={trimmedUser}
+                  currentUserId={myId}
+                  resolveUserName={displayNameOf}
+                  onOpenMe={() => setListTab('me')}
                   onSelectRoom={handleSelectRoom}
                   onCreateRoom={createRoom}
-                  onLogout={handleLogout}
                   onAddFriend={() => setShowAddFriend(true)}
-                  onlineNicknames={onlineNicknames}
+                  onlineNicknames={globalOnlineNicknames}
                   pinnedRoomIds={pinnedRoomIds}
                   onTogglePin={togglePinRoom}
                   onGlobalSearch={() => setGlobalSearchOpen(true)}
+                  clearedRooms={clearedRooms}
                 />
               )}
               {listTab === 'contacts' && (
@@ -536,11 +550,12 @@ export default function ChatApp({ onLogout }: ChatAppProps) {
                   friends={contactList}
                   incoming={friendsData.incoming}
                   outgoing={friendsData.outgoing}
-                  onlineNicknames={onlineNicknames}
+                  onlineNicknames={globalOnlineNicknames}
                   onSelectFriend={handleSelectFriend}
                   onAddFriend={() => setShowAddFriend(true)}
                   onAccept={async (n) => { await respond(n, 'accept'); }}
                   onReject={async (n) => { await respond(n, 'reject'); }}
+                  onRemoveFriend={handleRemoveFriend}
                   onOpenGroups={() => setShowGroupList(true)}
                   groupCount={groupRooms.length}
                 />
@@ -551,7 +566,7 @@ export default function ChatApp({ onLogout }: ChatAppProps) {
                   profile={myProfile}
                   friendCount={contactList.length}
                   groupCount={groupRooms.length}
-                  onSaveProfile={saveProfile}
+                  onSaveProfile={handleSaveProfile}
                   onLogout={handleLogout}
                 />
               )}
@@ -572,12 +587,15 @@ export default function ChatApp({ onLogout }: ChatAppProps) {
                     onlineUsers={onlineUsers}
                     isDM={isDM}
                     dmOtherUser={dmOtherUser}
+                    dmOtherUserId={dmOtherUserId}
+                    globalOnlineIds={globalOnlineIds}
                     dmOtherAvatar={dmOtherUser ? avatars[dmOtherUser] ?? null : null}
                     memberCount={isDM ? 0 : roomMembers.length}
                     otherTyping={isDM && otherTypingUsers.length > 0}
                     onBack={handleBackToList}
                     onOpenMembers={isDM ? undefined : () => setShowMembers(true)}
                     onDeleteRoom={() => handleDeleteRoom(roomId, isDM)}
+                    onClearHistory={handleClearHistory}
                     searchOpen={searchOpen}
                     searchQuery={searchQuery}
                     onToggleSearch={toggleSearch}
@@ -608,6 +626,7 @@ export default function ChatApp({ onLogout }: ChatAppProps) {
                     highlightMessageId={highlightMessageId}
                     onLoadMessageById={loadMessageById}
                     roomId={roomId}
+                    currentUserId={myId}
                   />
 
                   {/* Quote preview */}
@@ -697,35 +716,36 @@ export default function ChatApp({ onLogout }: ChatAppProps) {
           {/* === Overlays === */}
           {showAddFriend && (
             <AddFriendModal
-              currentUser={trimmedUser}
+              currentUserId={myId}
               onClose={() => setShowAddFriend(false)}
-              onStartDM={(nickname: string) => {
-                handleStartDM(nickname);
+              onStartDM={(userId: string) => {
+                handleStartDM(userId);
                 setViewingChat(true);
               }}
-              onSendRequest={async (nickname: string) => {
-                const r = await sendRequest(nickname);
+              onSendRequest={async (userId: string) => {
+                const r = await sendRequest(userId);
                 await reloadFriends();
                 return r;
               }}
-              friendNicknames={friendsData.friends.map((f) => f.nickname)}
-              outgoingNicknames={friendsData.outgoing.map((f) => f.nickname)}
+              friendIds={friendsData.friends.map((f) => f.id)}
+              outgoingIds={friendsData.outgoing.map((f) => f.id)}
             />
           )}
 
           {groupModal && (
             <CreateGroupModal
-              currentUser={trimmedUser}
+              currentUserId={myId}
+              currentUserName={myProfile?.display_name || trimmedUser}
               friends={contactList}
               mode={groupModal.mode}
-              existingMembers={roomMembers.map((m) => m.nickname)}
+              existingMembers={roomMembers.map((m) => m.id)}
               onClose={() => setGroupModal(null)}
               onCreated={(newRoomId) => {
                 joinRoom(newRoomId);
                 setViewingChat(true);
                 setShowGroupList(false);
               }}
-              onInvite={async (nicknames) => { await addMembers(nicknames); }}
+              onInvite={async (userIds) => { await addMembers(userIds); }}
             />
           )}
 
@@ -733,14 +753,14 @@ export default function ChatApp({ onLogout }: ChatAppProps) {
             <GroupMembersPanel
               roomId={roomId}
               roomName={currentRoomName || roomId}
-              currentUser={trimmedUser}
+              currentUserId={myId}
               members={roomMembers}
               loading={membersLoading}
               onlineNicknames={onlineNicknames}
               onClose={() => setShowMembers(false)}
               onInvite={() => { setShowMembers(false); setGroupModal({ mode: 'invite' }); }}
-              onRemove={(target) => removeMember(trimmedUser, target)}
-              onSetRole={(target, role) => setRole(trimmedUser, target, role)}
+              onRemove={(target) => removeMember(myId, target)}
+              onSetRole={(target, role) => setRole(myId, target, role)}
               onLeft={() => {
                 setShowMembers(false);
                 setViewingChat(false);
@@ -817,15 +837,16 @@ export default function ChatApp({ onLogout }: ChatAppProps) {
                 </div>
                 <div className="flex-1 overflow-y-auto">
                   {rooms.map((r) => {
-                    const other = r.type === 'dm' ? getDMOtherUser(r.id, trimmedUser) : null;
-                    const title = other || r.name || r.id;
+                    // 私聊：other 是对方 UUID，标题/头像回退到服务端写入的房间名
+                    const otherId = r.type === 'dm' ? getDMOtherUser(r.id, myId) : null;
+                    const title = (otherId ? displayNameOf(otherId) : '') || r.name || r.id;
                     return (
                       <button
                         key={r.id}
                         onClick={() => handlePickForwardTarget(r.id)}
                         className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-muted transition-colors text-left"
                       >
-                        <Avatar name={title} avatar={other ? avatars[other] ?? null : null} size={40} />
+                        <Avatar name={title} avatar={avatars[title] ?? null} size={40} />
                         <div className="flex-1 min-w-0">
                           <p className="text-[15px] text-foreground truncate">{title}</p>
                           <p className="text-[12px] text-muted-foreground truncate">

@@ -111,6 +111,25 @@ export function addHiddenRoom(id: string): string[] {
 }
 
 /**
+ * 取消隐藏一个房间（把房间从隐藏集合移除），返回最新列表。
+ *
+ * 语义：微信式「删除会话」只影响本机列表的显示，不应永久屏蔽该会话。
+ * 当对方发来新消息时，会话要能被「复活」——否则房间会一直留在已加入列表里
+ * 显示（handleNewDM 会把它重新 addJoinedRoom），却因为被排除在实时订阅之外
+ * 而永久收不到消息，且刷新页面也无法恢复。
+ */
+export function removeHiddenRoom(id: string): string[] {
+  const clean = id.trim();
+  const list = getHiddenRooms().filter((x) => x !== clean);
+  try {
+    localStorage.setItem(HIDDEN_ROOMS_KEY, JSON.stringify(list));
+  } catch {
+    /* 忽略 */
+  }
+  return list;
+}
+
+/**
  * "置顶"会话：持久化到独立 key，列表排序时置顶项永远排在最前。
  * 纯前端本地偏好，不影响对端。
  */

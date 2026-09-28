@@ -3,20 +3,25 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import AdminGate from '@/components/AdminGate';
 import { API_CONFIG } from '@/config';
+import { supabase } from '@/lib/supabase';
 import type { Room, Message } from '@/types';
-import { Loader2, LogOut, ShieldCheck, Hash, MessageSquare, ChevronLeft, Trash2, AlertTriangle, Check, RefreshCw } from 'lucide-react';
+import { Loader2, LogOut, ShieldCheck, Hash, MessageSquare, ChevronLeft, Trash2, AlertTriangle, Check, RefreshCw, Palette } from 'lucide-react';
+import { useBrandTheme } from '@/hooks/useBrandTheme';
 
 const DEFAULT_ROOM_ID = 'default-room';
 
 /**
  * /admin — 管理后台。
  *
- * 独立于普通聊天：使用 admin_session 会话，登录密码为 ADMIN_PASSWORD。
+ * 鉴权：管理员 = 普通 Supabase Auth 账号 + public.users.role='admin'。
+ * 登录后由 middleware 对每个 /api/admin/* 请求做服务端 role 校验，不再依赖 admin_session / ADMIN_PASSWORD。
  * 功能：查看全部房间 + 查看某房间消息 + 删除群聊（单个或批量，均需二次确认）。
  */
 export default function AdminPage() {
   // null = 校验中；false = 未登录；true = 已登录
   const [authed, setAuthed] = useState<boolean | null>(null);
+  // 进入登录框时的提示（例如「当前账号不是管理员」）
+  const [gateNotice, setGateNotice] = useState('');
 
   const [rooms, setRooms] = useState<Room[]>([]);
   const [roomsLoading, setRoomsLoading] = useState(false);
@@ -42,6 +47,9 @@ export default function AdminPage() {
   // 视图切换：房间管理 / 审计日志
   const [view, setView] = useState<'manage' | 'audit'>('manage');
 
+  // 品牌主题（微信绿 / 经典靛蓝），管理页一键切换，全站生效
+  const { theme: brandTheme, toggle: toggleBrandTheme } = useBrandTheme();
+
   // 审计日志
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [logsLoading, setLogsLoading] = useState(false);
@@ -60,6 +68,14 @@ export default function AdminPage() {
       const res = await fetch(API_CONFIG.ADMIN_ROOMS_ENDPOINT, { credentials: 'same-origin' });
       if (res.status === 401) {
         setAuthed(false);
+        setGateNotice('');
+        return false;
+      }
+      // 已登录但非管理员：middleware 返回 403，不应卡在「校验中」无限转圈，
+      // 而是退回登录框并给出明确提示。
+      if (res.status === 403) {
+        setAuthed(false);
+        setGateNotice('当前账号不是管理员，请使用管理员账号登录');
         return false;
       }
       const data = await res.json();
@@ -93,8 +109,9 @@ export default function AdminPage() {
         `${API_CONFIG.ADMIN_MESSAGES_ENDPOINT}?roomId=${encodeURIComponent(room.id)}`,
         { credentials: 'same-origin' }
       );
-      if (res.status === 401) {
+      if (res.status === 401 || res.status === 403) {
         setAuthed(false);
+        if (res.status === 403) setGateNotice('当前账号不是管理员，请使用管理员账号登录');
         return;
       }
       const data = await res.json();
@@ -112,7 +129,7 @@ export default function AdminPage() {
 
   const handleLogout = useCallback(async () => {
     try {
-      await fetch(API_CONFIG.ADMIN_VERIFY_ENDPOINT, { method: 'DELETE' });
+      await supabase?.auth.signOut();
     } catch { /* ignore */ }
     setAuthed(false);
     setRooms([]);
@@ -212,8 +229,9 @@ export default function AdminPage() {
       const res = await fetch(`${API_CONFIG.ADMIN_AUDIT_LOGS_ENDPOINT}${qs}`, {
         credentials: 'same-origin',
       });
-      if (res.status === 401) {
+      if (res.status === 401 || res.status === 403) {
         setAuthed(false);
+        if (res.status === 403) setGateNotice('当前账号不是管理员，请使用管理员账号登录');
         return;
       }
       const data = await res.json();
@@ -276,11 +294,11 @@ export default function AdminPage() {
   if (!authed) {
     return (
       <AdminGate
-        endpoint={API_CONFIG.ADMIN_VERIFY_ENDPOINT}
         title="管理后台"
-        subtitle="请输入管理员密码"
+        subtitle="请使用管理员账号登录"
         submitLabel="进入后台"
-        onSuccess={() => { setAuthed(true); fetchRooms(); }}
+        notice={gateNotice}
+        onSuccess={() => { setGateNotice(''); setAuthed(true); fetchRooms(); }}
       />
     );
   }
@@ -301,13 +319,28 @@ export default function AdminPage() {
               审计日志
             </TabButton>
           </div>
-          <button
-            onClick={handleLogout}
-            className="w-9 h-9 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-muted transition-colors"
-            aria-label="退出管理后台"
-          >
-            <LogOut className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={toggleBrandTheme}
+              className="h-9 px-3 rounded-lg flex items-center gap-1.5 text-muted-foreground hover:bg-muted transition-colors text-[13px] font-medium"
+              aria-label="切换界面主题"
+              title={
+                brandTheme === 'classic'
+                  ? '当前：经典靛蓝，点击切换为微信绿'
+                  : '当前：微信绿，点击切换为经典靛蓝'
+              }
+            >
+              <Palette className="w-4 h-4" />
+              {brandTheme === 'classic' ? '经典靛蓝' : '微信绿'}
+            </button>
+            <button
+              onClick={handleLogout}
+              className="w-9 h-9 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-muted transition-colors"
+              aria-label="退出管理后台"
+            >
+              <LogOut className="w-5 h-5" />
+            </button>
+          </div>
         </header>
 
         {view === 'audit' ? (

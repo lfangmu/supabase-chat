@@ -1,33 +1,27 @@
 'use client';
 
 import { useCallback } from 'react';
-import type { RealtimeChannel } from '@supabase/supabase-js';
+import type { SendBroadcast } from '@/lib/realtimeRelay';
 
 interface UseTypingIndicatorParams {
-  channelRef: React.MutableRefObject<RealtimeChannel | null>;
+  roomId: string;
+  /** 服务端中继的广播出口（替代 supabase.channel 的 send） */
+  sendBroadcast: SendBroadcast;
 }
 
-export function useTypingIndicator({ channelRef }: UseTypingIndicatorParams) {
+export function useTypingIndicator({ roomId, sendBroadcast }: UseTypingIndicatorParams) {
   const sendTypingStart = useCallback(
     (user: string) => {
-      channelRef.current?.send({
-        type: 'broadcast',
-        event: 'typing-start',
-        payload: { user },
-      });
+      sendBroadcast(roomId, 'typing-start', { user });
     },
-    [channelRef]
+    [roomId, sendBroadcast]
   );
 
   const sendTypingStop = useCallback(
     (user: string) => {
-      channelRef.current?.send({
-        type: 'broadcast',
-        event: 'typing-stop',
-        payload: { user },
-      });
+      sendBroadcast(roomId, 'typing-stop', { user });
     },
-    [channelRef]
+    [roomId, sendBroadcast]
   );
 
   return { sendTypingStart, sendTypingStop };

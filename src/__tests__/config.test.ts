@@ -82,11 +82,8 @@ describe('config', () => {
     it('should have all required endpoints', () => {
       expect(API_CONFIG.MESSAGES_ENDPOINT).toBeTruthy();
       expect(API_CONFIG.UPLOAD_MEDIA_ENDPOINT).toBeTruthy();
-      expect(API_CONFIG.AUTH_LOGIN_ENDPOINT).toBeTruthy();
-      expect(API_CONFIG.AUTH_REGISTER_ENDPOINT).toBeTruthy();
-      expect(API_CONFIG.AUTH_LOGOUT_ENDPOINT).toBeTruthy();
+      // 账号注册 / 登录 / 登出 / 找回 已由 Supabase Auth 取代，端点不再存在
       expect(API_CONFIG.AUTH_ME_ENDPOINT).toBeTruthy();
-      expect(API_CONFIG.ADMIN_VERIFY_ENDPOINT).toBeTruthy();
       expect(API_CONFIG.ADMIN_ROOMS_ENDPOINT).toBeTruthy();
       expect(API_CONFIG.ADMIN_AUDIT_LOGS_ENDPOINT).toBeTruthy();
     });

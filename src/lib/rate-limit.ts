@@ -25,19 +25,6 @@ export const RATE_LIMIT_RULES: Array<{
   pathPrefix: string;
   config: RateLimitConfig;
 }> = [
-  // 注册 / 登录接口：限流防暴力破解与批量注册
-  {
-    pathPrefix: '/api/auth/login',
-    config: { windowMs: 60 * 1000, max: 10 },
-  },
-  {
-    pathPrefix: '/api/auth/register',
-    config: { windowMs: 60 * 1000, max: 10 },
-  },
-  {
-    pathPrefix: '/api/admin/verify',
-    config: { windowMs: 60 * 1000, max: 5 },
-  },
   // 上传接口：中等限流
   {
     pathPrefix: '/api/upload-media',

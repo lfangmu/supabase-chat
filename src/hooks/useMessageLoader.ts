@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Message } from '@/types';
 import { MESSAGE_CONFIG, STORAGE_CONFIG_KEYS, API_CONFIG } from '@/config';
-import { safeSetCache } from '@/utils/cacheUtils';
+import { safeSetCache, invalidateMessageCacheIfNeeded } from '@/utils/cacheUtils';
 
 const PAGE_SIZE = MESSAGE_CONFIG.PAGE_SIZE;
 const MAX_PROCESSED_IDS = MESSAGE_CONFIG.MAX_PROCESSED_IDS;
@@ -32,6 +32,22 @@ export function useMessageLoader({ roomId, processedIdsRef, abortControllerRef }
   const [isLoading, setIsLoading] = useState(false);
   const oldestTimeRef = useRef<string | null>(null);
 
+  /**
+   * 切换房间时「同步」清空消息列表。
+   *
+   * messages 的加载发生在 effect 里，而 effect 要等本轮 render 提交之后才执行。若不处理，
+   * 从 A 房间切到 B 房间的**第一帧**会用 B 房间的标题去渲染 A 房间的旧消息——典型症状就是
+   * 「在通讯录里点开某个私聊时，会先闪一下默认聊天室的消息」。
+   *
+   * 这里采用 React 官方推荐的「渲染期间同步调整 state」写法：在本轮 render 内直接触发一次
+   * 额外渲染，浏览器不会绘制出带旧消息的中间帧（等价于 key 变化时的状态重置）。
+   */
+  const [messagesRoomId, setMessagesRoomId] = useState(roomId);
+  if (messagesRoomId !== roomId) {
+    setMessagesRoomId(roomId);
+    setMessages([]);
+  }
+
   // Keep oldestTimeRef in sync
   useEffect(() => {
     if (messages.length > 0) {
@@ -43,6 +59,9 @@ export function useMessageLoader({ roomId, processedIdsRef, abortControllerRef }
 
   // Initial load: DB + local cache merge
   useEffect(() => {
+    // 破坏性迁移（如 00020 TRUNCATE messages）后，清掉可能残留的旧消息缓存
+    invalidateMessageCacheIfNeeded();
+
     const cacheKey = `${STORAGE_CONFIG_KEYS.MESSAGES_PREFIX}${roomId}`;
     let initial: Message[] = [];
     let cancelled = false;
@@ -99,9 +118,9 @@ export function useMessageLoader({ roomId, processedIdsRef, abortControllerRef }
     return () => {
       cancelled = true;
       controller.abort();
-      // Capture the ref value for cleanup to avoid stale closure warning
-      const idsRef = processedIdsRef;
-      idsRef.current.clear();
+      // 注意：不要在这里 clear() 共享的 processedIdsRef。它是跨房间共用的去重集合
+      // （useMessages 实例级），被某个房间的清理逻辑清空会导致其它房间的实时消息
+      // 去重失效、出现重复处理。内存上限由 trimProcessedIds 在各处统一管控。
     };
   }, [roomId, processedIdsRef, abortControllerRef]);
 

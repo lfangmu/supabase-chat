@@ -26,10 +26,10 @@ const baseProps = {
   currentRoomId: '',
   unreadRoomIds: new Set<string>(),
   mentionedRoomIds: new Set<string>(),
-  currentUser: 'me',
+  // 当前用户身份为 Supabase Auth UUID
+  currentUserId: '00000000-0000-0000-0000-000000000001',
   onSelectRoom: vi.fn(),
   onCreateRoom: vi.fn(),
-  onLogout: vi.fn(),
 };
 
 describe('ChatListPage', () => {
@@ -75,16 +75,58 @@ describe('ChatListPage', () => {
     expect(screen.queryByText('添加朋友')).toBeNull();
   });
 
-  it('calls onLogout via the header logout button', () => {
-    const onLogout = vi.fn();
+  // 左上角不再有头像/退出菜单；右上角「操作菜单」(+) 仅保留 个人资料（退出登录已移除，留在「我的」tab）
+  it('exposes 个人资料 in the top-right + menu; 退出登录 is not present', () => {
+    const onOpenMe = vi.fn();
     render(
       createElement(ChatListPage, {
         rooms: [makeRoom({ id: 'g1', name: 'G' })],
         ...baseProps,
-        onLogout,
+        onOpenMe,
       }),
     );
-    fireEvent.click(screen.getByLabelText('退出登录'));
-    expect(onLogout).toHaveBeenCalledTimes(1);
+    // 左上角头像菜单已移除
+    expect(screen.queryByLabelText('账户菜单')).toBeNull();
+    // 右上角操作菜单内可见 个人资料，且不再有 退出登录
+    fireEvent.click(screen.getByLabelText('操作菜单'));
+    expect(screen.getByText('个人资料')).toBeInTheDocument();
+    expect(screen.queryByText('退出登录')).toBeNull();
+    fireEvent.click(screen.getByText('个人资料'));
+    expect(onOpenMe).toHaveBeenCalledTimes(1);
+  });
+
+  // 私聊房间名是「创建者视角」写入的：创建者看到的是对方的名字，非创建者看到的是自己的名字。
+  // 所以标题必须按 roomId 里内嵌的 UUID 对称推导「对方」，不能直接用 room.name。
+  const ME = '00000000-0000-0000-0000-000000000001';
+  const OTHER = '00000000-0000-0000-0000-000000000002';
+  const dmRoom = makeRoom({
+    id: `dm:${ME}:${OTHER}`,
+    name: '我自己的昵称', // 服务端按创建者视角写入 → 对「我」来说其实是我自己的名字
+    type: 'dm',
+  });
+
+  it('私聊标题显示「对方」的名字，而不是创建者视角的房间名（我的名字）', () => {
+    render(
+      createElement(ChatListPage, {
+        rooms: [dmRoom],
+        ...baseProps,
+        resolveUserName: (id: string) => (id === OTHER ? '对方昵称' : '我自己的昵称'),
+      }),
+    );
+
+    expect(screen.getByText('对方昵称')).toBeInTheDocument();
+    expect(screen.queryByText('我自己的昵称')).toBeNull();
+  });
+
+  it('对方资料还没加载到时，回退用房间名兜底（不显示空白标题）', () => {
+    render(
+      createElement(ChatListPage, {
+        rooms: [dmRoom],
+        ...baseProps,
+        resolveUserName: () => '',
+      }),
+    );
+
+    expect(screen.getByText('我自己的昵称')).toBeInTheDocument();
   });
 });

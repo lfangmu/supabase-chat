@@ -4,26 +4,53 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useMessages } from './useMessages';
 import { useFileUpload } from './useFileUpload';
 import { usePresence } from './usePresence';
+import { useGlobalPresence } from './useGlobalPresence';
 import { useDraft } from './useDraft';
 import { useDM, getDMOtherUser, generateDMRoomId } from './useDM';
 import { Message, Room } from '@/types';
 import { showError, showSuccess } from '@/utils/errorHandler';
 import { requestNotificationPermission, removeMentionedRoom, getMentionedRooms, notifyNewMessage, isMentioned, addMentionedRoom, notifyMention } from '@/utils/notifications';
 import { generateId } from '@/utils/id';
-import { getJoinedRooms, addJoinedRoom, removeJoinedRoom, getHiddenRooms, addHiddenRoom, getPinnedRooms, togglePinnedRoom, getServerRooms, setServerRooms, getLastRoom, setLastRoom } from '@/utils/joinedRooms';
-import { ROOM_CONFIG, API_CONFIG } from '@/config';
+import { getJoinedRooms, addJoinedRoom, removeJoinedRoom, getHiddenRooms, addHiddenRoom, removeHiddenRoom, getPinnedRooms, togglePinnedRoom, getServerRooms, setServerRooms, getLastRoom, setLastRoom } from '@/utils/joinedRooms';
+import { ROOM_CONFIG, API_CONFIG, DM_CONFIG } from '@/config';
+import type { CurrentUser } from '@/lib/identity';
 
-export const useChat = (isChatView = true) => {
-  const [user, setUser] = useState('');
-  const [showNicknameInput, setShowNicknameInput] = useState(true);
-  const [savedNickname, setSavedNickname] = useState<string | null>(null);
+export const useChat = (isChatView = true, initialUser: CurrentUser | null = null) => {
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(initialUser);
+
+  /**
+   * 父组件重新探测会话后（改昵称 / 改资料）要把新身份同步进来。
+   *
+   * `useState(initialUser)` 只取「初始值」，之后 prop 变化**不会**自动生效。
+   * 以前之所以必须让 ChatApp 整棵卸载重挂才能让新昵称生效，就是因为缺了这段同步——
+   * 而重挂的代价是「页面像刷新了一样跳回消息 tab」。有了它，父组件可以静默刷新。
+   *
+   * 内容等价时保持原引用，避免下游依赖 currentUser 的 effect 无谓重跑。
+   */
+  useEffect(() => {
+    if (!initialUser) return;
+    setCurrentUser((prev) =>
+      prev &&
+      prev.userId === initialUser.userId &&
+      prev.displayName === initialUser.displayName &&
+      prev.email === initialUser.email &&
+      prev.isAnonymous === initialUser.isAnonymous &&
+      prev.role === initialUser.role
+        ? prev
+        : initialUser
+    );
+  }, [initialUser]);
+  const userId = currentUser?.userId ?? '';
+  const displayName = currentUser?.displayName ?? '';
+  const user = displayName; // 向后兼容：组件渲染层仍用展示名
+  const ready = !!currentUser && !!user;
   const [message, setMessage] = useState('');
   // 上次打开的房间在挂载后（hydration 完成）从 localStorage 还原，避免 SSR 水合不一致。
   const [roomId, setRoomId] = useState(ROOM_CONFIG.DEFAULT_ROOM);
   const [quotedMessage, setQuotedMessage] = useState<Message | null>(null);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [mentionedRoomIds, setMentionedRoomIds] = useState<Set<string>>(new Set());
-  // 微信式未读数字角标：key=roomId, value=未在当前房间时收到的消息条数
+  // 微信式未读数字角标：key=roomId, value=非当前房间时收到的消息条数
   // 持久化到 localStorage，刷新页面后红点数字不再归零（与 lastSeen 高亮保持一致）
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>(() => {
     try {
@@ -42,10 +69,8 @@ export const useChat = (isChatView = true) => {
   const [pinnedRoomIds, setPinnedRoomIds] = useState<Set<string>>(() => new Set(getPinnedRooms()));
 
   // === Refs for the external-message handler (DM real-time delivery fix) ===
-  // These let handleExternalMessage stay a stable useCallback([]) while still
-  // reading the latest values of user / rooms / fetchRooms / loadDMs.
-  const userRef = useRef(user);
-  useEffect(() => { userRef.current = user; }, [user]);
+  const userIdRef = useRef(userId);
+  useEffect(() => { userIdRef.current = userId; }, [userId]);
   const roomsRef = useRef<Room[]>(rooms);
   useEffect(() => { roomsRef.current = rooms; }, [rooms]);
   const roomIdRef = useRef(roomId);
@@ -53,6 +78,26 @@ export const useChat = (isChatView = true) => {
   const fetchRoomsRef = useRef<() => void>(() => {});
   const loadDMsRef = useRef<() => void>(() => {});
   const hiddenRoomsRef = useRef<Set<string>>(new Set());
+  // 「上次打开的房间」是否已完成还原（门闩，见下方持久化/还原两个 effect 的注释）
+  const restoredLastRoomRef = useRef(false);
+
+  /**
+   * 微信式「会话复活」：把房间从隐藏集合里摘掉，并同步内存状态 + ref。
+   *
+   * 「隐藏（删除会话）」只是本机列表不显示，**绝不等于永久屏蔽**。一旦对方发来新消息
+   * （或本人主动点开该会话），必须取消隐藏——否则该房间会被永久排除在实时订阅之外，
+   * 消息再也收不到（这正是历史 bug：隐藏私聊后对方发的消息不达、刷新页面也无法恢复）。
+   *
+   * 注意必须同步更新 hiddenRoomsRef：state 的更新要等下一次 render 才写入 ref，
+   * 而同一 tick 内的 handleExternalMessage 可能连续判定多次，读到旧 ref 会漏判。
+   */
+  const reviveHiddenRoom = useCallback((id: string) => {
+    if (!hiddenRoomsRef.current.has(id)) return;
+    removeHiddenRoom(id);
+    const next = new Set(getHiddenRooms());
+    hiddenRoomsRef.current = next;
+    setHiddenRooms(next);
+  }, []);
 
   /**
    * Handle a message that arrived (via the per-DM-room subscription) for a room OTHER
@@ -62,48 +107,74 @@ export const useChat = (isChatView = true) => {
    * handler discovers the room (if new), marks it unread, and shows a notification.
    */
   const handleExternalMessage = useCallback((roomId: string, msg: Message) => {
-    const trimmedUser = userRef.current.trim();
+    const uid = userIdRef.current;
 
     const isMyRoom = roomsRef.current.some((r) => r.id === roomId);
     let isMyDM = false;
     if (roomId.startsWith('dm:')) {
-      isMyDM = !!getDMOtherUser(roomId, trimmedUser);
+      // 私聊房间 ID 由 UUID 构成；用 UUID 判定是否参与，绝不解析昵称
+      isMyDM = !!getDMOtherUser(roomId, uid);
     }
     // Not my business — ignore (public room I'm not in, or someone else's DM)
     if (!isMyRoom && !isMyDM) return;
 
-    // A DM I haven't joined yet → add it to my joined rooms so it shows in the list.
-    // Skip if the room is hidden (user "deleted" the private chat from their own list) —
-    // otherwise a new inbound message would resurrect it.
-    if (isMyDM && !isMyRoom && !hiddenRoomsRef.current.has(roomId)) {
-      addJoinedRoom(roomId);
-      loadDMsRef.current();
+    // 私聊收到新消息 → 会话「复活」（微信式）：
+    //   1) 取消隐藏（隐藏只是本机列表不显示，不能永久屏蔽会话）
+    //   2) 若尚未在列表里 → 重新加入，使其立刻出现在侧边栏并带上未读红点
+    // 历史 bug：此处对隐藏房间直接跳过（且 roomIds 也把隐藏房间排除出订阅），
+    // 导致「删除会话」后对方发来的消息永远收不到，且刷新页面也无法恢复。
+    if (isMyDM) {
+      reviveHiddenRoom(roomId);
+      if (!isMyRoom) {
+        addJoinedRoom(roomId);
+        loadDMsRef.current();
+      }
     }
 
     // Refresh room list (updates last_message_at → drives unread badge).
     // 节流合并：短时间内多条后台消息只触发一次 fetchRooms，避免请求刷屏。
     scheduleFetchRoomsRef.current();
 
-    // Notify (only for messages sent by other people)
-    if (msg.user !== trimmedUser) {
+    // Notify (only for messages sent by other people). 自消息判定用发送者 UUID。
+    if (msg.userId !== uid) {
       const preview =
         msg.type === 'text'
           ? msg.content
           : `[${msg.type === 'image' ? '图片' : msg.type === 'video' ? '视频' : msg.type === 'voice' ? '语音' : '文件'}]`;
       notifyNewMessage(msg.user, preview, false);
-      // @提及闭环：收到 @我 的消息 → 列表红点 + 提醒（即使不在当前房间）
-      if (isMentioned(msg.content, trimmedUser)) {
+      // @提及闭环：收到 @我 的消息 → 列表红点 + 提醒（只在该消息属于「非当前房间」时）
+      //
+      // 历史 bug（2026-09-27 双账号复测）：这里无条件 addMentionedRoom，
+      // 于是「正在房间内看着」时收到 @我 也会打上 @ 红点；而清除只在 switchRoom 里做，
+      // 用户已经在该房间就不会再触发 → @ 红点永久残留。正在看的房间直接算已读。
+      if (isMentioned(msg.content, displayNameRef.current)) {
         const roomName = roomsRef.current.find((r) => r.id === roomId)?.name || '';
-        addMentionedRoom(roomId);
-        setMentionedRoomIds(getMentionedRooms());
-        notifyMention(roomName, msg.user, preview);
+        if (roomId === roomIdRef.current && isChatViewRef.current) {
+          // 正在看这个房间 → 已读，顺手清掉可能残留的提及标记
+          removeMentionedRoom(roomId);
+          setMentionedRoomIds(getMentionedRooms());
+        } else {
+          addMentionedRoom(roomId);
+          setMentionedRoomIds(getMentionedRooms());
+          notifyMention(roomName, msg.user, preview);
+        }
       }
       // 微信式未读计数：非当前房间收到他人消息时累加
       if (roomId !== roomIdRef.current) {
         setUnreadCounts((prev) => ({ ...prev, [roomId]: (prev[roomId] || 0) + 1 }));
       }
     }
-  }, []);
+  }, [reviveHiddenRoom]);
+
+  // 展示名 ref（@提及匹配用，按展示名）
+  const displayNameRef = useRef(displayName);
+  useEffect(() => { displayNameRef.current = displayName; }, [displayName]);
+
+  // 是否真的停留在聊天页。移动端单列布局下「列表页」和「聊天页」共用同一个 roomId，
+  // 所以判断「用户是不是正在看这个房间」必须同时看 isChatView，只看 roomId 会把
+  // 停在列表页（只是 roomId 仍指向该房间）误判成已读，从而吞掉该有的 @ 红点。
+  const isChatViewRef = useRef(isChatView);
+  useEffect(() => { isChatViewRef.current = isChatView; }, [isChatView]);
 
   // switchRoom is defined further below; useDM needs it for onSwitchRoom, so we
   // route through a ref to avoid a temporal-dead-zone / ordering problem.
@@ -111,17 +182,56 @@ export const useChat = (isChatView = true) => {
 
   // ============ DM / 好友系统 ============
   const { dmRooms, loadDMs, startDM } = useDM({
-    currentUser: user,
+    currentUserId: userId,
     onSwitchRoom: (id: string) => switchRoomRef.current(id),
   });
 
+  // 接收方在收到 `new-dm` 广播时，可能还没订阅该私聊房间的实时频道（房间不在本地
+  // 已加入列表 → 不在 roomIds → 没有该房间的后台 CDC 订阅），导致第一条消息的 INSERT
+  // 已经错过（订阅建立前就发生了）。这里主动回拉最新一条消息做兜底，保证对方至少收到
+  // 「新消息」通知 + 未读红点（点开后由 useMessageLoader 从 DB 拉全量历史）。
+  const peekMissedDM = useCallback(
+    (roomId: string) => {
+      fetch(`/api/messages?roomId=${encodeURIComponent(roomId)}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          const msgs = data?.messages as Message[] | undefined;
+          if (!msgs || msgs.length === 0) return;
+          // 只把最新一条交给外部消息处理器（通知 + 未读 +1 + 列表刷新），
+          // 避免多条消息引发重复通知；打开房间后会拉取完整历史。
+          const newest = msgs[msgs.length - 1];
+          handleExternalMessage(roomId, newest);
+        })
+        .catch(() => {});
+    },
+    [handleExternalMessage]
+  );
+
   // A DM was started/continued with us (global `new-dm` signal) — discover the room
   // so it appears in the list and gets subscribed for real-time delivery.
-  const handleNewDM = useCallback((roomId: string) => {
-    addJoinedRoom(roomId);
-    loadDMsRef.current();
-    scheduleFetchRoomsRef.current();
-  }, []);
+  //
+  // ⚠️ 必须校验归属：`new-dm` 是发在全局公共频道 `chat-events` 上的广播，任何客户端
+  // 都能收到「任何人 ↔ 任何人」新建私聊的信号。若不校验就 addJoinedRoom，别人之间的
+  // 私聊会被塞进本机 localStorage 的已加入列表 → 侧边栏出现「别人的私聊」（点开因
+  // isRoomParticipant 判定不含本人而 403「无权查看该房间」）。房间号内嵌两方 UUID，
+  // 用 getDMOtherUser 判定「我是否为参与方」即可（与 handleExternalMessage 同源）。
+  const handleNewDM = useCallback(
+    (roomId: string) => {
+      if (!getDMOtherUser(roomId, userIdRef.current)) return;
+      // 对方发起了私聊 → 隐藏的会话同样要「复活」（与 handleExternalMessage 语义一致）。
+      reviveHiddenRoom(roomId);
+      // 仅对「新发现」的私聊做兜底回拉：已加入的房间本就有后台 CDC 订阅，消息会经
+      // onExternalMessage 正常送达；若这里再回拉会重复通知 / 重复 +未读。
+      const alreadyKnown = roomsRef.current.some((r) => r.id === roomId);
+      addJoinedRoom(roomId);
+      loadDMsRef.current();
+      scheduleFetchRoomsRef.current();
+      if (!alreadyKnown) {
+        peekMissedDM(roomId);
+      }
+    },
+    [peekMissedDM, reviveHiddenRoom]
+  );
 
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // REQ-007: Last-seen timestamps per room (drive unread badges).
@@ -134,6 +244,29 @@ export const useChat = (isChatView = true) => {
       return {};
     }
   });
+
+  /**
+   * 需要建立实时订阅的房间集合（排除当前打开的房间——由主频道负责）。
+   *
+   * ⚠️ 绝不按 hiddenRooms 过滤：隐藏只是「本机列表不显示」，若把隐藏会话排除出实时
+   * 订阅，接收方将永久收不到该会话的新消息（历史 bug：隐藏后消息不达、刷新也无法恢复）。
+   *
+   * 数据源三合一，确保「接收方一定订阅着自己的每一个私聊」：
+   *   1) rooms   —— 已加载房间（含隐藏的；隐藏不影响订阅）
+   *   2) dmRooms —— /api/dm-list 返回的全量私聊（房间号内嵌本人 UUID，必属本人）。
+   *      它不依赖容易丢失的 new-dm 广播，是接收方最可靠的兜底订阅来源。
+   *   3) 本地已加入记录 —— 覆盖尚未出现在 rooms 列表里的房间
+   */
+  const realtimeRoomIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const r of rooms) ids.add(r.id);
+    for (const r of dmRooms) ids.add(r.id);
+    for (const id of getJoinedRooms()) ids.add(id);
+    ids.delete(roomId);
+    return Array.from(ids).filter(Boolean);
+    // hiddenRooms 故意不进入依赖：隐藏状态不改变实时订阅集合
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rooms, dmRooms, roomId]);
 
   const {
     messages,
@@ -161,7 +294,11 @@ export const useChat = (isChatView = true) => {
     }
     fetchRooms();
   }, {
-    currentUser: user,
+    // currentUser 传展示名：useMessageRealtime 用它做自消息识别与 @提及检测（msg.user 是展示名）。
+    // currentUserId 传 UUID：useReadReceipts 的已读回执 API 以 actor(UUID) 为准（user !== actor → 403），
+    // 不能用展示名，否则所有已读回执请求都会被拒，已读功能完全失效。
+    currentUser: displayName,
+    currentUserId: userId,
     roomName: rooms.find((r) => r.id === roomId)?.name || '',
     onRoomUpdated: () => {
       scheduleFetchRooms();
@@ -170,19 +307,29 @@ export const useChat = (isChatView = true) => {
       scheduleFetchRooms();
     },
     onExternalMessage: handleExternalMessage,
-    // 订阅所有已加入房间（群+私聊，排除当前房间）的实时消息，
-    // 使未打开的群聊也能即时收到消息与 @提及提醒
-    roomIds: rooms.map((r) => r.id).filter((id) => id !== roomId && !hiddenRooms.has(id)),
+    // 订阅所有相关房间（群 + 私聊，排除当前房间）的实时消息，
+    // 使未打开的会话也能即时收到消息与 @提及提醒。
+    // 见 realtimeRoomIds 注释：隐藏会话同样必须订阅，否则接收方永远收不到消息。
+    roomIds: realtimeRoomIds,
     onNewDM: handleNewDM,
     isDM: rooms.find((r) => r.id === roomId)?.type === 'dm',
     isActive: isChatView,
+    // 实时通道刚把 @我 记成未读 → 立刻刷新红点状态，不必等下面的 10s 轮询
+    onMention: () => {
+      setMentionedRoomIds(getMentionedRooms());
+    },
   });
 
   const { uploading, uploadingMessages, handleFileChange, handleVoiceUpload } =
-    useFileUpload({ user, roomId, sendMessage });
+    useFileUpload({ user: displayName, userId, roomId, sendMessage });
 
-  // Online presence
-  const { onlineUsers } = usePresence(roomId, user);
+  // Online presence (per-room, used for "X 人在线" header in group chats)
+  const { onlineUsers } = usePresence(roomId, displayName);
+
+  // 全局在线状态（跨房间）：私聊/通讯录据此判断对方是否在线，
+  // 不再依赖对方是否正巧打开同一私聊房间。
+  const { onlineIds: globalOnlineIds, onlineNicknames: globalOnlineNicknames } =
+    useGlobalPresence(displayName, userId);
 
   // REQ-004: Drafts
   const { draftSaved, saveDraft, loadDraftForRoom, clearDraft } = useDraft();
@@ -192,31 +339,20 @@ export const useChat = (isChatView = true) => {
     const seen = new Set<string>();
     const users: { id: string; nickname: string; online_at: string }[] = [];
     for (let i = messages.length - 1; i >= 0; i--) {
-      const msgUser = messages[i].user;
-      if (!seen.has(msgUser) && msgUser !== user.trim()) {
-        seen.add(msgUser);
-        users.push({ id: msgUser, nickname: msgUser, online_at: '' });
+      const m = messages[i];
+      const mId = m.userId || m.user;
+      if (!seen.has(mId) && m.userId !== userId) {
+        seen.add(mId);
+        // id 用发送者 UUID；nickname 仍为展示名（@提及 / 渲染）
+        users.push({ id: mId, nickname: m.user, online_at: '' });
         if (users.length >= 20) break;
       }
     }
     return users;
-  }, [messages, user]);
+  }, [messages, userId]);
 
   // Prevent page scroll — handled by fixed layout container (no body mutation needed)
   // REMOVED: document.body.style.overflow = 'hidden' was conflicting with modals
-
-  // Load nickname from localStorage
-  useEffect(() => {
-    const saved = localStorage.getItem('chat_nickname');
-    if (saved) {
-      setUser(saved);
-      setSavedNickname(saved);
-      setShowNicknameInput(false);
-    }
-    // REQ-007: Load mentioned rooms for red dot indicators
-    setMentionedRoomIds(getMentionedRooms());
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // Persist last-seen timestamps to localStorage whenever they change
   useEffect(() => {
@@ -233,26 +369,49 @@ export const useChat = (isChatView = true) => {
   }, [unreadCounts]);
 
   // 记住当前打开的房间，刷新后自动还原（?room= 已从 URL 移除，改存本地）。
+  //
+  // ⚠️ 必须等「还原上次房间」执行完再开始持久化：本 effect 声明在还原 effect 之前，
+  // 首帧 roomId 还是默认大厅，若不设门闩就会先把默认大厅写回 chat_last_room，
+  // 等还原 effect 去读时读到的已经是默认大厅 → **「记住上次房间」功能整体失效**
+  // （刷新后永远回到默认大厅，用户观感就是「怎么又跳到默认聊天室」）。
   useEffect(() => {
+    if (!restoredLastRoomRef.current) return;
     if (roomId) setLastRoom(roomId);
   }, [roomId]);
 
   // 若当前房间已从加载出的房间列表里消失（被删除 / 被移出群），回退默认大厅，
   // 避免停留在已不存在的房间。rooms 为空（初始/无加入房间）时不触发，避免首屏误重置。
+  //
+  // 关键修正：切换到「新私聊」时，handleStartDM 已经把该房间写入本地已加入记录
+  // （addJoinedRoom），但 rooms 列表要等 fetchRooms 异步回来才包含它——这中间的
+  // 一帧若只按 rooms 判定会把刚点开的私聊又弹回默认大厅。
+  // 因此额外判断：只要房间仍在本地已加入记录里，就不回退。
   useEffect(() => {
     if (rooms.length === 0) return;
-    if (roomId !== ROOM_CONFIG.DEFAULT_ROOM && !rooms.some((r) => r.id === roomId)) {
-      setRoomId(ROOM_CONFIG.DEFAULT_ROOM);
+    if (roomId !== ROOM_CONFIG.DEFAULT_ROOM) {
+      const stillInList = rooms.some((r) => r.id === roomId);
+      const stillJoinedLocally = getJoinedRooms().includes(roomId);
+      if (!stillInList && !stillJoinedLocally) {
+        setRoomId(ROOM_CONFIG.DEFAULT_ROOM);
+      }
     }
   }, [rooms, roomId]);
 
   // Mark the currently-viewed room as "read" on mount and whenever it changes.
   // Entering a room clears its unread indicator (previously only leaving a room did,
   // so rooms you simply opened then returned from stayed unread forever).
+  //
+  // REQ-007: 同时清掉「@提及」红点。历史 bug（2026-09-27 双账号复测）：
+  // 提及标记在收到 @我 时写入，却只在 switchRoom 里清除 —— 用户若当时正停留在该房间
+  // （不会再触发一次 switchRoom），@ 红点就会永久残留。进入房间即视为已读，这里兜底清掉。
   useEffect(() => {
     if (!roomId) return;
     setLastSeenTimestamps((prev) => ({ ...prev, [roomId]: new Date().toISOString() }));
-  }, [roomId]);
+    // 还停留在列表页时不能清：红点正是要在列表上显示的。
+    if (!isChatView) return;
+    removeMentionedRoom(roomId);
+    setMentionedRoomIds(getMentionedRooms());
+  }, [roomId, isChatView]);
 
   // 首启兜底：本地没有任何已加入房间时，自动加入默认大厅，避免空白屏
   useEffect(() => {
@@ -271,6 +430,8 @@ export const useChat = (isChatView = true) => {
         setRoomId(last);
       }
     } catch { /* ignore */ }
+    // 门闩：允许上面的持久化 effect 从此开始写入 chat_last_room
+    restoredLastRoomRef.current = true;
   }, []);
 
   // Fetch rooms list (with deduplication and abort support)
@@ -288,7 +449,6 @@ export const useChat = (isChatView = true) => {
     fetchRoomsInFlightRef.current = true;
     try {
       // 非公开目录模型：只请求本地已加入的房间，不暴露全部房间列表。
-      // 管理后台的「查看全部房间」已拆分到独立的 /admin 页面（admin_session）。
       const joined = getJoinedRooms();
       if (joined.length === 0) {
         setRooms([]);
@@ -396,6 +556,22 @@ export const useChat = (isChatView = true) => {
     }
   }, []);
 
+  // 自愈清洗：把「不属于本人」的私聊房间从本地已加入记录里剔除。
+  // 历史 bug（handleNewDM 无条件 addJoinedRoom + new-dm 全局广播）曾把别人的私聊
+  // 塞进本机 localStorage；仅修新增路径不够，已污染的旧数据也要清掉，否则侧边栏
+  // 会继续显示那些点开即 403 的「别人的房间」。
+  useEffect(() => {
+    if (!userId) return;
+    let changed = false;
+    for (const id of getJoinedRooms()) {
+      if (id.startsWith(DM_CONFIG.ID_PREFIX) && !getDMOtherUser(id, userId)) {
+        removeJoinedRoom(id);
+        changed = true;
+      }
+    }
+    if (changed) fetchRooms();
+  }, [userId, fetchRooms]);
+
   // 加载时先做房间发现对账（补齐被拉进的群 + 刷新服务端成员快照），再拉一次房间列表。
   // 合并原「reconcile + 独立 fetchRooms」两个 effect，避免挂载时重复请求。
   useEffect(() => {
@@ -404,12 +580,15 @@ export const useChat = (isChatView = true) => {
 
   // Periodic refresh for unread counts (every 30s, with recursive setTimeout to prevent stacking).
   // 同时做房间发现对账：被别人拉进的群会在周期刷新时补齐，无需手动刷新页面。
+  // 并刷新私聊列表（loadDMs）：新私聊即使错过 new-dm 广播，也能在 30s 内被发现并订阅，
+  // 是接收方实时投递的最终兜底。
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
     const scheduleNext = () => {
       timer = setTimeout(async () => {
         await reconcileMyRooms();
         await fetchRooms();
+        loadDMsRef.current();
         scheduleNext();
       }, 30_000);
     };
@@ -431,7 +610,11 @@ export const useChat = (isChatView = true) => {
       const res = await fetch('/api/rooms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, created_by: user.trim() }),
+        // 注意：created_by 必须传本人 UUID（currentUser.userId），不能传展示名。
+        // 服务端 POST /api/rooms 会校验 created_by === actor(UUID) 并以其覆盖写入；
+        // 若传展示名则 created_by.trim() !== actor → 403「只能以本人身份建群」，
+        // 导致按名称建群对一切已设置展示名的用户彻底失效（auth 迁移后的潜伏回归）。
+        body: JSON.stringify({ name, created_by: userId }),
       });
       const data = await res.json();
       if (!data.success) {
@@ -454,7 +637,7 @@ export const useChat = (isChatView = true) => {
     } catch {
       showError('创建群聊失败');
     }
-  }, [user, roomId, fetchRooms]);
+  }, [userId, roomId, fetchRooms]);
 
   // Join a room by ID — 非公开目录模型：加入本地记录并显示
   const joinRoom = useCallback(async (rawId: string) => {
@@ -464,6 +647,32 @@ export const useChat = (isChatView = true) => {
     setRoomId(id);
     await fetchRooms();
   }, [fetchRooms]);
+
+  /**
+   * 进入群聊时在服务端补一条 room_members 行（幂等，不降级已有角色）。
+   *
+   * 必须落库：实时消息走 Postgres Changes + RLS，RLS 的 is_room_participant() 只认
+   * room_members 里的真实行；localStorage 的「已加入」记录对 RLS 完全无效。
+   * 没有这一行 → 群聊实时推送收不到任何新消息（历史消息仍可经 API 读出）。
+   */
+  const ensureMembership = useCallback((rid: string) => {
+    const id = (rid || '').trim();
+    if (!id) return;
+    if (id.startsWith(DM_CONFIG.ID_PREFIX) || id === ROOM_CONFIG.DEFAULT_ROOM) return;
+    fetch(API_CONFIG.ROOM_MEMBERS_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roomId: id, join: true }),
+    }).catch(() => {
+      /* 非致命：失败最多影响实时推送，不影响收发消息 */
+    });
+  }, []);
+
+  // 当前房间是群聊时，确保服务端有成员行（覆盖首启/切房/建房后进入）
+  useEffect(() => {
+    if (!userId || !roomId) return;
+    ensureMembership(roomId);
+  }, [roomId, userId, ensureMembership]);
 
   // Switch room — MUST be declared before deleteRoom/renameRoom to avoid TDZ
   const switchRoom = useCallback((newRoomId: string) => {
@@ -507,17 +716,18 @@ export const useChat = (isChatView = true) => {
 
   // Wrapper: ensure the DM room is in joined rooms before switching, so it shows
   // in the list immediately, then refresh the list.
-  const handleStartDM = useCallback(async (otherUser: string) => {
-    const id = generateDMRoomId(user.trim(), otherUser);
+  const handleStartDM = useCallback(async (otherUserId: string) => {
+    const id = generateDMRoomId(userId, otherUserId);
+    // 显式「和某人聊天」→ 取消隐藏，使被隐藏过的会话立即回到列表并重新建立实时订阅
+    removeHiddenRoom(id);
+    hiddenRoomsRef.current = new Set(getHiddenRooms());
+    setHiddenRooms(hiddenRoomsRef.current);
     addJoinedRoom(id);
-    await startDM(otherUser);
+    await startDM(otherUserId);
     fetchRooms();
-  }, [user, startDM, fetchRooms]);
+  }, [userId, startDM, fetchRooms]);
 
-  /**
-   * 私聊「仅从自己列表隐藏」：从本地已加入记录移除 + 写入隐藏集合（防实时订阅复活）
-   * + 从内存房间列表即时剔除。对方仍能看到并收发，仅本地不可见。
-   */
+  // 私聊「仅从自己列表隐藏」：从本地已加入记录移除 + 写入隐藏集合（防实时订阅复活）
   const hideRoom = useCallback((id: string) => {
     addHiddenRoom(id);
     removeJoinedRoom(id);
@@ -532,31 +742,21 @@ export const useChat = (isChatView = true) => {
   }, []);
 
   const handleSetNickname = useCallback(() => {
-    const trimmed = user.trim();
-    if (trimmed) {
-      try {
-        localStorage.setItem('chat_nickname', trimmed);
-      } catch (e) {
-        console.warn('Failed to save nickname to localStorage:', e);
-      }
-      setShowNicknameInput(false);
-      requestNotificationPermission().catch((e) => {
-        console.warn('Failed to request notification permission:', e);
-      });
-    }
-  }, [user]);
+    // 旧版昵称输入入口已移除：展示名通过 /api/me + 引导设置管理。
+  }, []);
 
   const handleEditNickname = useCallback(() => {
-    setShowNicknameInput(true);
+    // 展示名编辑改由 MePage / 引导页负责
   }, []);
 
   const sendText = useCallback(() => {
     const trimmedMsg = message.trim();
-    if (!trimmedMsg || uploading || !user.trim()) return;
+    if (!trimmedMsg || uploading || !user.trim() || !userId) return;
 
     const newMsg: Message = {
       id: generateId(),
       user: user.trim(),
+      userId,
       type: 'text',
       content: trimmedMsg,
       timestamp: new Date().toISOString(),
@@ -577,7 +777,7 @@ export const useChat = (isChatView = true) => {
 
     // REQ-004: Clear draft after sending
     clearDraft(roomId);
-  }, [message, uploading, user, sendMessage, quotedMessage, clearDraft, roomId]);
+  }, [message, uploading, user, userId, sendMessage, quotedMessage, clearDraft, roomId]);
 
   const handleMessageChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -640,10 +840,10 @@ export const useChat = (isChatView = true) => {
   const currentRoomName = useMemo(() => rooms.find((r) => r.id === roomId)?.name || '', [rooms, roomId]);
 
   return {
+    currentUser,
     user,
-    setUser,
-    savedNickname,
-    showNicknameInput,
+    userId,
+    setCurrentUser,
     message,
     setMessage,
     messages,
@@ -657,6 +857,9 @@ export const useChat = (isChatView = true) => {
     typingUsers,
     onlineUsers,
     recentUsers,
+    // 全局在线（跨房间）：私聊在线判定 + 通讯录在线点
+    globalOnlineIds,
+    globalOnlineNicknames,
     quotedMessage,
     setQuotedMessage,
     handleSetNickname,

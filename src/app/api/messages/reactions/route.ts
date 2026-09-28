@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
-import { getSessionUser } from '@/lib/auth';
+import { getAuthUser } from '@/lib/auth-user';
 import { isRoomParticipant } from '@/lib/rooms';
 
 export const runtime = 'edge';
@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: false, message: '无效的房间 ID' }, { status: 400 });
     }
 
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }
@@ -68,7 +68,7 @@ export async function GET(request: NextRequest) {
 // 切换当前用户对某条消息的某个 emoji 回应（已存在则删除，否则新增）
 export async function POST(request: NextRequest) {
   try {
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }
@@ -95,12 +95,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, message: '无权回应该消息' }, { status: 403 });
     }
 
-    // 切换
+    // 切换（user_id 为发起回应的用户 UUID，绝不用昵称）
     const { data: existing } = await supabase
       .from('reactions')
       .select('*')
       .eq('message_id', messageId)
-      .eq('user', actor)
+      .eq('user_id', actor)
       .eq('emoji', emoji)
       .maybeSingle();
 
@@ -114,7 +114,7 @@ export async function POST(request: NextRequest) {
       await supabase.from('reactions').insert({
         id,
         message_id: messageId,
-        user: actor,
+        user_id: actor,
         emoji,
         created_at: new Date().toISOString(),
       });

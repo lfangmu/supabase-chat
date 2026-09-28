@@ -5,23 +5,27 @@ import { X, Search, UserPlus, MessageCircle, Check, Loader2 } from 'lucide-react
 import Avatar from './Avatar';
 
 interface SearchResult {
+  /** 用户 UUID（身份） */
   id: string;
-  nickname: string;
+  /** 展示名 */
+  display_name: string;
   avatar: string | null;
   created_at: string;
-  last_login_at: string | null;
+  last_active_at: string | null;
 }
 
 interface AddFriendModalProps {
-  currentUser: string;
+  /** 当前用户的 Supabase Auth UUID */
+  currentUserId: string;
   onClose: () => void;
-  onStartDM: (nickname: string) => void;
-  /** 发送好友申请；返回 { success, message } */
-  onSendRequest?: (nickname: string) => Promise<{ success?: boolean; message?: string } | void>;
-  /** 已是好友的昵称列表 */
-  friendNicknames?: string[];
-  /** 已发出申请、等待对方通过的昵称列表 */
-  outgoingNicknames?: string[];
+  /** 入参为对方 UUID */
+  onStartDM: (userId: string) => void;
+  /** 发送好友申请；入参为对方 UUID；返回 { success, message } */
+  onSendRequest?: (userId: string) => Promise<{ success?: boolean; message?: string } | void>;
+  /** 已是好友的用户 UUID 列表 */
+  friendIds?: string[];
+  /** 已发出申请、等待对方通过的用户 UUID 列表 */
+  outgoingIds?: string[];
 }
 
 /** Format relative time */
@@ -41,12 +45,12 @@ function formatLastSeen(ts: string | null): string {
 }
 
 const AddFriendModal: React.FC<AddFriendModalProps> = ({
-  currentUser,
+  currentUserId,
   onClose,
   onStartDM,
   onSendRequest,
-  friendNicknames = [],
-  outgoingNicknames = [],
+  friendIds = [],
+  outgoingIds = [],
 }) => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -103,7 +107,7 @@ const AddFriendModal: React.FC<AddFriendModalProps> = ({
         const data = await res.json();
         if (data.success) {
           // Filter out current user
-          setResults((data.users as SearchResult[]).filter((u) => u.nickname !== currentUser.trim()));
+          setResults((data.users as SearchResult[]).filter((u) => u.id !== currentUserId.trim()));
           setSearched(true);
         } else {
           setResults([]);
@@ -118,7 +122,7 @@ const AddFriendModal: React.FC<AddFriendModalProps> = ({
         setLoading(false);
       }
     }, 300);
-  }, [currentUser]);
+  }, [currentUserId]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
@@ -196,24 +200,24 @@ const AddFriendModal: React.FC<AddFriendModalProps> = ({
             </div>
           ) : (
             results.map((u) => {
-              const isFriend = friendNicknames.includes(u.nickname);
-              const isPending = outgoingNicknames.includes(u.nickname) || requested.includes(u.nickname);
-              const isSending = sending === u.nickname;
+              const isFriend = friendIds.includes(u.id);
+              const isPending = outgoingIds.includes(u.id) || requested.includes(u.id);
+              const isSending = sending === u.id;
               return (
                 <div
                   key={u.id}
                   className="flex items-center gap-3 px-4 py-3 hover:bg-muted transition-colors border-b border-border/50"
                 >
-                  <Avatar name={u.nickname} avatar={u.avatar} size={40} rounded="xl" />
+                  <Avatar name={u.display_name} avatar={u.avatar} size={40} rounded="xl" />
                   <div className="flex-1 min-w-0">
-                    <p className="text-[15px] font-medium text-foreground">{u.nickname}</p>
+                    <p className="text-[15px] font-medium text-foreground">{u.display_name}</p>
                     <p className="text-[11px] text-muted-foreground">
-                      {u.last_login_at ? `最近活跃: ${formatLastSeen(u.last_login_at)}` : '已注册'}
+                      {u.last_active_at ? `最近活跃: ${formatLastSeen(u.last_active_at)}` : '已注册'}
                     </p>
                   </div>
                   {isFriend ? (
                     <button
-                      onClick={() => handleStartDM(u.nickname)}
+                      onClick={() => handleStartDM(u.id)}
                       className="px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:opacity-90 transition-opacity flex items-center gap-1 flex-shrink-0"
                     >
                       <MessageCircle className="w-3.5 h-3.5" />
@@ -226,7 +230,7 @@ const AddFriendModal: React.FC<AddFriendModalProps> = ({
                     </span>
                   ) : onSendRequest ? (
                     <button
-                      onClick={() => handleAdd(u.nickname)}
+                      onClick={() => handleAdd(u.id)}
                       disabled={isSending}
                       className="px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:opacity-90 transition-opacity flex items-center gap-1 flex-shrink-0 disabled:opacity-60"
                     >
@@ -235,7 +239,7 @@ const AddFriendModal: React.FC<AddFriendModalProps> = ({
                     </button>
                   ) : (
                     <button
-                      onClick={() => handleStartDM(u.nickname)}
+                      onClick={() => handleStartDM(u.id)}
                       className="px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:opacity-90 transition-opacity flex items-center gap-1 flex-shrink-0"
                     >
                       <MessageCircle className="w-3.5 h-3.5" />

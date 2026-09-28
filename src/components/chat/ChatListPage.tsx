@@ -1,13 +1,14 @@
 'use client';
 
 import React, { useMemo, useState, useRef, useEffect } from 'react';
-import { Plus, MessageCircle, Hash, Users, LogOut, ShieldCheck, Pin, Search } from 'lucide-react';
+import { Plus, MessageCircle, Hash, Users, ShieldCheck, Pin, Search, User } from 'lucide-react';
 import { Room } from '@/types';
 import { loadDraft } from '@/hooks/useDraft';
 import { getDMOtherUser } from '@/hooks/useDM';
 import ThemeToggle from '@/components/chat/ThemeToggle';
 import Avatar from '@/components/chat/Avatar';
 import { formatClock } from '@/utils/date-utils';
+import { isHiddenByClear } from '@/utils/clearedRooms';
 
 interface ChatListPageProps {
   rooms: Room[];
@@ -16,10 +17,14 @@ interface ChatListPageProps {
   unreadRoomIds: Set<string>;
   mentionedRoomIds: Set<string>;
   unreadCounts?: Record<string, number>;
-  currentUser: string;
+  /** 当前用户的 Supabase Auth UUID（用于解析私聊房间对象） */
+  currentUserId: string;
+  /** 由用户 UUID 解析展示名。私聊标题按「对方」解析时用，不能用房间名（创建者视角） */
+  resolveUserName?: (userId: string) => string;
+  /** 打开「我」tab（右上角操作菜单里的「个人资料」） */
+  onOpenMe?: () => void;
   onSelectRoom: (roomId: string) => void;
   onCreateRoom: (name: string) => void;
-  onLogout: () => void;
   onAddFriend?: () => void;
   onlineNicknames?: string[];
   /** 已置顶的房间 ID 集合（仅本地偏好） */
@@ -28,6 +33,8 @@ interface ChatListPageProps {
   onTogglePin?: (roomId: string) => void;
   /** 打开全局跨会话消息搜索 */
   onGlobalSearch?: () => void;
+  /** 已「清空聊天记录」的房间（roomId -> 清空时刻）：隐藏其旧预览与时间 */
+  clearedRooms?: Record<string, string>;
 }
 
 /** Format timestamp to short display */
@@ -56,15 +63,17 @@ const ChatListPage: React.FC<ChatListPageProps> = React.memo(({
   unreadRoomIds,
   mentionedRoomIds,
   unreadCounts,
-  currentUser,
+  currentUserId,
+  resolveUserName,
+  onOpenMe,
   onSelectRoom,
   onCreateRoom,
-  onLogout,
   onAddFriend,
   onlineNicknames = [],
   pinnedRoomIds = new Set<string>(),
   onTogglePin,
   onGlobalSearch,
+  clearedRooms = {},
 }) => {
   const [showMenu, setShowMenu] = useState(false);
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -152,9 +161,17 @@ const ChatListPage: React.FC<ChatListPageProps> = React.memo(({
     // DM room name is stored from the creator's perspective, so derive the other
     // party's name symmetrically from the room ID for both participants.
     const isItemDM = room.type === 'dm';
-    const otherUser = isItemDM ? (getDMOtherUser(room.id, currentUser) ?? room.name) : null;
-    const displayName = isItemDM ? (otherUser ?? room.name) : room.name;
-    const otherOnline = isItemDM && otherUser ? onlineNicknames.includes(otherUser) : false;
+    // otherUser 是对方的 UUID。私聊标题/在线状态都必须按「对方」解析：
+    // 房间名是「创建者视角」写入的（= 创建者看到的对方名字），对非创建者来说它其实是
+    // 自己的名字 —— 直接用 room.name 会让非创建者看到「自己」当会话名。
+    const otherUser = isItemDM ? getDMOtherUser(room.id, currentUserId) : null;
+    const resolvedOtherName = otherUser ? resolveUserName?.(otherUser) || '' : '';
+    // 资料表还没加载到对方名字时回退到 room.name（至少创建者视角是对的），避免标题空白
+    const displayName = isItemDM ? resolvedOtherName || room.name : room.name;
+    const otherOnline = isItemDM ? onlineNicknames.includes(displayName) : false;
+    // 本机已清空：该房间「清空时刻」之前的预览/时间都隐藏（新消息到达后时间戳更新会自动恢复显示）
+    const clearedAt = clearedRooms[room.id] ?? null;
+    const isHiddenPreview = isHiddenByClear(room.last_message_at, clearedAt);
 
     return (
       // 用 div + role=button：避免行内交互元素嵌套（保持语义化可点击行）
@@ -245,7 +262,7 @@ const ChatListPage: React.FC<ChatListPageProps> = React.memo(({
                 <Pin className="w-3.5 h-3.5 text-muted-foreground" aria-label="已置顶" />
               )}
               <span className="text-[11px] text-muted-foreground">
-                {formatTime(room.last_message_at)}
+                {isHiddenPreview ? '' : formatTime(room.last_message_at)}
               </span>
             </span>
           </div>
@@ -256,6 +273,8 @@ const ChatListPage: React.FC<ChatListPageProps> = React.memo(({
                   <span className="text-destructive font-medium">[草稿] </span>
                   {draftContent}
                 </>
+              ) : isHiddenPreview ? (
+                <span className="text-muted-foreground/70">聊天记录已清空</span>
               ) : room.last_message_content ? (
                 <>
                   <span className="text-foreground/70 font-medium">{room.last_message_user}: </span>
@@ -286,16 +305,6 @@ const ChatListPage: React.FC<ChatListPageProps> = React.memo(({
     <div className="flex flex-col h-full bg-card">
       {/* Nav bar */}
       <header className="flex items-center justify-between px-4 h-12 flex-shrink-0 bg-card">
-        {/* 左侧：退出登录（从右上移至左上，对应把 + 放到右上角，对齐微信） */}
-        <div className="flex items-center gap-1 min-w-[60px]">
-          <button
-            onClick={onLogout}
-            className="w-11 h-11 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-muted active:bg-muted/80 transition-colors"
-            aria-label="退出登录"
-          >
-            <LogOut className="w-5 h-5" />
-          </button>
-        </div>
         <div className="flex items-center gap-2">
           <h1 className="text-[17px] font-semibold text-foreground">消息</h1>
           {isAdmin && (
@@ -326,6 +335,16 @@ const ChatListPage: React.FC<ChatListPageProps> = React.memo(({
           </button>
           {showMenu && (
             <div className="absolute top-10 right-0 z-50 w-48 bg-card rounded-xl shadow-lg border border-border py-1.5 animate-in fade-in slide-in-from-top-1 duration-150">
+              {onOpenMe && (
+                <button
+                  onClick={() => { setShowMenu(false); onOpenMe(); }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-muted transition-colors text-left"
+                >
+                  <User className="w-4 h-4 text-muted-foreground" />
+                  <span className="text-sm text-foreground">个人资料</span>
+                </button>
+              )}
+              {onOpenMe && <div className="my-1 border-t border-border" />}
               <button
                 onClick={() => { setShowMenu(false); setShowCreateForm(true); }}
                 className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-muted transition-colors text-left"

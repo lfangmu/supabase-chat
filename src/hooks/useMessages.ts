@@ -3,13 +3,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Message, Reaction } from '@/types';
 import { useMessageLoader } from './useMessageLoader';
-import { useMessageRealtime } from './useMessageRealtime';
+import { useRelayRealtime } from './useRelayRealtime';
 import { useMessageActions } from './useMessageActions';
 import { useTypingIndicator } from './useTypingIndicator';
 import { useReadReceipts } from './useReadReceipts';
 
 interface UseMessagesParams {
   currentUser?: string;
+  // 当前用户 Supabase Auth UUID（用于已读回执 API，需与 actor 一致；displayName 会被拒）
+  currentUserId?: string;
   roomName?: string;
   onRoomUpdated?: () => void;
   onMessageSent?: () => void;
@@ -18,6 +20,8 @@ interface UseMessagesParams {
   onNewDM?: (roomId: string) => void;
   isDM?: boolean;
   isActive?: boolean;
+  // @提及被记为未读后的回调（父层据此立刻刷新红点状态，避免等 10s 轮询）
+  onMention?: (roomId: string) => void;
 }
 
 export const useMessages = (roomId: string, onRoomDeleted?: (roomId: string) => void, params?: UseMessagesParams) => {
@@ -51,8 +55,9 @@ export const useMessages = (roomId: string, onRoomDeleted?: (roomId: string) => 
     messagesRef.current = messages;
   }, [messages]);
 
-  // Realtime broadcast subscription (onSync triggers DB catch-up after reconnect)
-  const { channelRef, globalChannelRef } = useMessageRealtime({
+  // 实时链路：服务端中继（SSE 收 + POST 发），替代 supabase.channel 的 WebSocket。
+  // 浏览器全程只走 HTTP，规避国内对浏览器 → Cloudflare WebSocket 的封锁。
+  const { sendBroadcast } = useRelayRealtime({
     roomId,
     setMessages,
     setTypingUsers,
@@ -61,12 +66,16 @@ export const useMessages = (roomId: string, onRoomDeleted?: (roomId: string) => 
     onRoomDeleted,
     onRoomUpdated: params?.onRoomUpdated,
     currentUser: params?.currentUser,
+    // 全局在线（presence:global）以 UUID 为 key，必须传真实身份
+    myId: params?.currentUserId,
     roomName: params?.roomName,
     onSync: syncNewMessages,
     onExternalMessage: params?.onExternalMessage,
     roomIds: params?.roomIds,
     onNewDM: params?.onNewDM,
     onReaction: handleReactionUpdate,
+    isActive: !!params?.isActive,
+    onMention: params?.onMention,
   });
 
   // Additional safety: sync from DB when app becomes visible (mobile resume)
@@ -95,24 +104,23 @@ export const useMessages = (roomId: string, onRoomDeleted?: (roomId: string) => 
   const { sendMessage, retryMessage, withdrawMessage, editMessage } = useMessageActions({
     roomId,
     setMessages,
-    channelRef,
-    globalChannelRef,
+    sendBroadcast,
     processedIdsRef,
     messagesRef,
     onMessageSent: params?.onMessageSent,
   });
 
   // Typing indicators
-  const { sendTypingStart, sendTypingStop } = useTypingIndicator({ channelRef });
+  const { sendTypingStart, sendTypingStop } = useTypingIndicator({ roomId, sendBroadcast });
 
   // 已读回执（仅私聊）
   const { fetchReadState } = useReadReceipts({
     roomId,
-    currentUser: params?.currentUser || '',
+    currentUserId: params?.currentUserId || '',
     isDM: !!params?.isDM,
     isActive: !!params?.isActive,
     messages,
-    channelRef,
+    sendBroadcast,
     setMessages,
     messagesRef,
   });
@@ -170,17 +178,16 @@ export const useMessages = (roomId: string, onRoomDeleted?: (roomId: string) => 
       const data = await res.json();
       if (data.success) {
         setReactionsByMessage((prev) => ({ ...prev, [messageId]: data.reactions }));
-        // 广播给同房间其他客户端
-        channelRef.current?.send({
-          type: 'broadcast',
-          event: 'chat-reaction',
-          payload: { messageId, reactions: data.reactions },
+        // 广播给同房间其他客户端（走服务端中继）
+        sendBroadcast(roomId, 'chat-reaction', {
+          messageId,
+          reactions: data.reactions,
         });
       }
     } catch {
       /* 失败不回滚，下次加载会修正 */
     }
-  }, [params?.currentUser, channelRef]);
+  }, [params?.currentUser, roomId, sendBroadcast]);
 
   // 切换房间时重置并加载该房间的表情回应
   useEffect(() => {
@@ -194,7 +201,6 @@ export const useMessages = (roomId: string, onRoomDeleted?: (roomId: string) => 
     hasMore,
     isLoading,
     typingUsers,
-    channelRef,
     loadMoreHistory,
     refreshMessages,
     sendMessage,

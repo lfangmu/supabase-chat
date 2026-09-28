@@ -16,10 +16,9 @@ cp .env.example .env.local
 #   NEXT_PUBLIC_SUPABASE_URL
 #   NEXT_PUBLIC_SUPABASE_KEY（Publishable key）
 #   SUPABASE_SERVICE_ROLE_KEY（仅服务端写操作，勿暴露到客户端）
-#   CHAT_JWT_SECRET
-#   CHAT_PASSWORD
-#   ADMIN_PASSWORD
-#   CHAT_AUTH_ENABLED=true
+#
+# 鉴权走 Supabase Auth：需在 Supabase 后台（Authentication → Sign In / Providers）
+# 开启 Email 与 Anonymous sign-ins。本地无需任何密码 / JWT 密钥变量。
 
 # 3) 启动开发服务器
 npm run dev            # http://localhost:3000
@@ -86,11 +85,12 @@ scope（可选）: auth | admin | api | ui | deploy | keepalive ...
 
 改动代码前，请先读 `docs/ARCHITECTURE.md` 了解全貌。以下红线请勿破坏：
 
-1. **双会话物理隔离**：普通聊天用 `chat_session`，管理后台用 `admin_session`，两套 cookie 各自签发/登出，互不影响。新增任何管理员接口必须走 `admin_session` 鉴权（`extractSession(cookieHeader, secret, 'admin_session')`），不可复用聊天会话。
-2. **中间件白名单**：`src/middleware.ts` 拦截所有 `/api/*`。公开端点（如 `/api/verify-password`、`/api/password-version`、`/api/keepalive`、管理后台自校验的 `/api/admin/verify`）必须显式列入 `PUBLIC_API_ROUTES`，否则外部/未登录请求会被 401 挡掉——历史上保活端点就因此失效过。
-3. **配置集中**：新增开关、端点路径、密钥名优先放在 `src/config/index.ts`，不要散落硬编码。
-4. **API 路由走 Edge Runtime**：`src/app/api/**/route.ts` 默认 Edge Runtime，避免使用 Node 专属 API（如 `fs`、部分 Node 内置模块）；密码比较用已有的 `timingSafeEqual` 防时序攻击。
-5. **服务端写操作**：删除/管理类操作需用 `SUPABASE_SERVICE_ROLE_KEY` 绕过 RLS，且务必在路由层做好鉴权（管理员会话校验）与防护（如禁止删除系统保留的 `default-room`）。
+1. **身份一律用 UUID**：身份键是 Supabase Auth 的 `auth.uid()`，用 `getAuthUser(request)` 获取。**绝不要把展示名（`display_name`）当身份键**——展示名可重复、可修改。消息表里的 `user` 列只是发送时的展示名快照，判归属请用 `user_id`。
+2. **管理员判定**：`/api/admin/*` 由中间件按 `public.users.role === 'admin'` 校验（403）；前端登录走统一的 `AuthScreen`，不再有独立后台密码。
+3. **中间件白名单**：`src/middleware.ts` 拦截所有 `/api/*`。公开端点（如 `/api/keepalive`）必须显式列入 `PUBLIC_API_ROUTES`，否则外部/未登录请求会被 401 挡掉——历史上保活端点就因此失效过。
+4. **配置集中**：新增开关、端点路径、密钥名优先放在 `src/config/index.ts`，不要散落硬编码。
+5. **API 路由走 Edge Runtime**：`src/app/api/**/route.ts` 默认 Edge Runtime，避免使用 Node 专属 API（如 `fs`、部分 Node 内置模块）。
+6. **服务端写操作**：删除/管理类操作需用 `SUPABASE_SERVICE_ROLE_KEY` 绕过 RLS，且务必在路由层做好鉴权与防护（如禁止删除系统保留的 `default-room`）。
 6. **房间可见性**：非公开房间不靠服务端目录暴露，普通聊天只返回本地已加入（`localStorage` 记录）的房间；管理员通过 `/api/admin/*` 查看全部。
 
 ---
@@ -108,7 +108,7 @@ scope（可选）: auth | admin | api | ui | deploy | keepalive ...
 本项目部署在 **Cloudflare Pages**（`next-on-pages`）。两个坑务必记住：
 
 1. **新增环境变量必须触发全新构建**：在 Cloudflare 控制台加变量后，**推送一个新的提交或点控制台 Deploy** 才能注入运行时；只点 **Retry** 会复用旧构建快照，新变量读到的全是 `undefined`。
-2. **首选 `ADMIN_PASSWORD`**：历史上一度支持 `SUPER_PASSWORD` / `CHAT_SUPER_PASSWORD` 作为超级密码，但本项目在 Cloudflare 上实测 `SUPER_PASSWORD` 注入不稳定，后台统一认 `ADMIN_PASSWORD`（仍兼容另两个作为兜底）。
+2. **环境变量只剩 Supabase 三件套**：`NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_KEY` / `SUPABASE_SERVICE_ROLE_KEY`（外加可选的 IMGBB / VAPID）。`CHAT_JWT_SECRET`、`SUPABASE_JWT_SECRET`、`CHAT_PASSWORD`、`ADMIN_PASSWORD` 等已随 Supabase Auth 迁移移除。
 
 ---
 

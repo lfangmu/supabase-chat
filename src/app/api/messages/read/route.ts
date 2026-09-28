@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
-import { getSessionUser } from '@/lib/auth';
+import { getAuthUser } from '@/lib/auth-user';
 import { isRoomParticipant } from '@/lib/rooms';
 
 export const runtime = 'edge';
@@ -10,11 +10,12 @@ export const runtime = 'edge';
  * POST /api/messages/read — 标记消息已读（持久化）
  * body: { roomId, user, messageIds: string[] }
  * 只记录「他人发来的消息」被当前用户已读；自己的消息不会被标。
+ * 身份以 actor（UUID）为准，用于过滤非本人发送的消息（按 user_id 而非展示名）。
  */
 export async function POST(request: NextRequest) {
   try {
     // 只能以自己的身份标记已读（防伪造他人已读回执）
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }
@@ -30,19 +31,19 @@ export async function POST(request: NextRequest) {
     }
     const supabase = getServiceClient();
 
-    // 仅标记「非本人发送」的消息为已读（借助 messages 表 user 字段过滤）
+    // 仅标记「非本人发送」的消息为已读（借助 messages 表 user_id 过滤）
     const { data: msgs } = await supabase
       .from('messages')
       .select('id')
       .eq('room_id', roomId)
-      .neq('user', user)
+      .neq('user_id', actor)
       .in('id', messageIds);
     const toMark = (msgs || []).map((m: { id: string }) => m.id);
     if (toMark.length === 0) {
       return NextResponse.json({ success: true, marked: [] });
     }
 
-    const rows = toMark.map((id: string) => ({ message_id: id, room_id: roomId, user, read_at: new Date().toISOString() }));
+    const rows = toMark.map((id: string) => ({ message_id: id, room_id: roomId, user_id: actor, read_at: new Date().toISOString() }));
     const { error } = await supabase.from('message_reads').insert(rows).select('message_id');
     if (error) {
       // 忽略唯一冲突（已读重复标记）
@@ -68,7 +69,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: false, message: '参数错误' }, { status: 400 });
     }
     // 只能查询自己发出消息的已读回执，且须为房间成员（防枚举他人已读状态）
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }
@@ -89,7 +90,7 @@ export async function GET(request: NextRequest) {
       .from('message_reads')
       .select('message_id')
       .eq('room_id', roomId)
-      .neq('user', user);
+      .neq('user_id', user);
     if (error) {
       return NextResponse.json({ success: false, message: '查询失败' }, { status: 500 });
     }

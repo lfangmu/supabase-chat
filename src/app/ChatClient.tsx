@@ -1,113 +1,102 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import AuthScreen, { AuthUser } from '@/components/AuthScreen';
+import AuthScreen from '@/components/AuthScreen';
 import ChatApp from '@/components/chat/ChatApp';
 import { Loader2 } from 'lucide-react';
+import { supabase } from '@/lib/supabase';
 import { API_CONFIG } from '@/config';
+import type { CurrentUser } from '@/lib/identity';
 
 /**
  * Root client component — 注册/登录门禁。
  *
  * Flow:
  *   checking → spinner
- *   unauthenticated → AuthScreen（登录 / 注册）
- *   orphaned session → 账号恢复面板（会话有效但 users/room_members 数据丢失，设新密码自愈）
- *   authenticated → ChatApp（主聊天界面）
+ *   unauthenticated (no Supabase session) → AuthScreen（匿名 / 邮箱登录 / 注册）
+ *   authenticated → ChatApp（主聊天界面）。display_name 为空时由 ChatApp 引导设置。
  *
- * On mount, probes /api/me：
- *   If 200 → 会话仍有效，直接进入聊天（昵称取自服务端身份）。
- *   If 401 且 message==='用户不存在' → 会话 JWT 有效但数据被清，展示恢复面板。
- *   If 401 其他 → 展示登录/注册界面。
+ * 身份来源：supabase.auth.getUser() 给出 UUID / email / is_anonymous；
+ * GET /api/me 给出 public.users 的展示名 / 头像 / 角色。两者合并为 CurrentUser。
  */
 export default function ChatClient() {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [checking, setChecking] = useState(true);
-  const [recoverMode, setRecoverMode] = useState(false);
-  const [recoverPwd, setRecoverPwd] = useState('');
-  const [recoverError, setRecoverError] = useState('');
-  const [recovering, setRecovering] = useState(false);
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
 
-  const probeAuth = useCallback(() => {
-    setChecking(true);
-    setRecoverMode(false);
-    fetch(API_CONFIG.AUTH_ME_ENDPOINT, { credentials: 'same-origin' })
-      .then(async (res) => {
-        let nickname: string | null = null;
-        let message = '';
-        try {
+  /**
+   * 重新探测会话身份。
+   *
+   * `silent` = 静默刷新：**不置 `checking`**。
+   * 这是必须的：`checking === true` 会渲染全屏 loading，从而把整个 `<ChatApp>` **卸载**，
+   * 刷新完成后重新挂载 → 用户在 ChatApp 里的全部本地状态（当前 tab、打开的会话、
+   * 滚动位置、草稿输入）都被重置。改昵称后回读资料就属于这种情况，会表现为
+   * 「提交后页面像刷新了一样，跳回消息 tab」。
+   * 静默刷新只更新 `currentUser`，组件树保持挂载。
+   */
+  const loadSession = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setChecking(true);
+    try {
+      if (!supabase) {
+        setCurrentUser(null);
+        setChecking(false);
+        return;
+      }
+
+      // 1) Supabase 会话（UUID 身份）
+      const { data: authData, error: authError } = await supabase.auth.getUser();
+      if (authError || !authData.user) {
+        setCurrentUser(null);
+        setChecking(false);
+        return;
+      }
+      const authUser = authData.user;
+
+      // 2) 资料（展示名等）—— 失败（如 users 行尚未创建）也继续，交给引导设置
+      let displayName = '';
+      let profileRole: string | undefined;
+      try {
+        const res = await fetch(API_CONFIG.AUTH_ME_ENDPOINT, { credentials: 'same-origin' });
+        if (res.ok) {
           const data = await res.json();
-          nickname = data?.user?.nickname ?? null;
-          message = data?.message ?? '';
-        } catch {
-          /* ignore parse errors */
+          if (data?.success && data?.user) {
+            displayName = data.user.display_name ?? '';
+            profileRole = data.user.role;
+          }
         }
-        if (res.ok && nickname) {
-          try { localStorage.setItem('chat_nickname', nickname); } catch { /* ignore */ }
-          setIsAuthenticated(true);
-          setChecking(false);
-          return;
-        }
-        // 会话 JWT 有效但数据丢失（users 行被清）：进入自愈恢复面板
-        if (res.status === 401 && message === '用户不存在') {
-          setRecoverMode(true);
-          setChecking(false);
-          return;
-        }
-        setIsAuthenticated(false);
-        setChecking(false);
-      })
-      .catch(() => {
-        setIsAuthenticated(false);
-        setChecking(false);
+      } catch {
+        /* 资料接口异常不阻断进入 */
+      }
+
+      setCurrentUser({
+        userId: authUser.id,
+        displayName,
+        email: authUser.email ?? null,
+        isAnonymous: authUser.is_anonymous,
+        // 把角色一并带出，供 ChatApp 判断是否为管理员
+        role: profileRole,
       });
+      setChecking(false);
+    } catch {
+      setCurrentUser(null);
+      setChecking(false);
+    }
   }, []);
 
   useEffect(() => {
-    probeAuth();
-  }, [probeAuth]);
+    loadSession();
+  }, [loadSession]);
 
-  const handleAuthSuccess = useCallback((user: AuthUser) => {
-    try { localStorage.setItem('chat_nickname', user.nickname); } catch { /* ignore */ }
-    setIsAuthenticated(true);
-  }, []);
+  /** 改完资料后回读身份：走静默路径，避免 ChatApp 卸载重挂导致界面跳回消息 tab */
+  const refreshIdentity = useCallback(() => loadSession({ silent: true }), [loadSession]);
 
   const handleLogout = useCallback(async () => {
     try {
-      await fetch(API_CONFIG.AUTH_LOGOUT_ENDPOINT, { method: 'POST' });
-    } catch { /* ignore */ }
+      await supabase?.auth.signOut();
+    } catch {
+      /* ignore */
+    }
     window.location.reload();
   }, []);
-
-  // 账号自愈：用仍然有效的会话，设新密码并重建 users / room_members
-  const handleRecover = useCallback(async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (recoverPwd.length < 6) {
-      setRecoverError('密码至少 6 个字符');
-      return;
-    }
-    setRecovering(true);
-    setRecoverError('');
-    try {
-      const res = await fetch(API_CONFIG.AUTH_RECOVER_ENDPOINT, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ newPassword: recoverPwd }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data?.success) {
-        setRecoverError(data?.message || '恢复失败，请稍后重试');
-        setRecovering(false);
-        return;
-      }
-      // 恢复成功：重新探测登录态（此时 users/room_members 已就绪，应返回 200）
-      probeAuth();
-    } catch {
-      setRecoverError('网络错误，请重试');
-      setRecovering(false);
-    }
-  }, [recoverPwd, probeAuth]);
 
   // Checking existing session
   if (checking) {
@@ -125,42 +114,17 @@ export default function ChatClient() {
     );
   }
 
-  // 账号恢复面板（会话有效但数据丢失）
-  if (recoverMode) {
-    return (
-      <div className="fixed inset-0 flex items-center justify-center bg-background p-4">
-        <form onSubmit={handleRecover} className="w-full max-w-sm flex flex-col gap-4 rounded-2xl border border-border bg-card p-6 shadow-lg">
-          <h1 className="text-xl font-semibold text-foreground">恢复账号</h1>
-          <p className="text-sm text-muted-foreground">
-            检测到你的登录会话仍然有效，但账号数据（资料 / 房间成员关系）在服务器端丢失了。
-            设置一个新密码即可恢复访问，历史消息通常不受影响。
-          </p>
-          <input
-            type="password"
-            autoFocus
-            value={recoverPwd}
-            onChange={(e) => setRecoverPwd(e.target.value)}
-            placeholder="设置新密码（至少 6 位）"
-            className="rounded-lg border border-border bg-background px-3 py-2 text-foreground outline-none focus:border-primary"
-          />
-          {recoverError && <p className="text-sm text-destructive">{recoverError}</p>}
-          <button
-            type="submit"
-            disabled={recovering}
-            className="rounded-lg bg-primary px-4 py-2 font-medium text-primary-foreground transition-opacity disabled:opacity-60"
-          >
-            {recovering ? '恢复中…' : '恢复账号'}
-          </button>
-        </form>
-      </div>
-    );
-  }
-
   // Unauthenticated → show login / register
-  if (!isAuthenticated) {
-    return <AuthScreen onSuccess={handleAuthSuccess} />;
+  if (!currentUser) {
+    return <AuthScreen onAuthed={loadSession} />;
   }
 
   // Authenticated → show main app
-  return <ChatApp onLogout={handleLogout} />;
+  return (
+    <ChatApp
+      currentUser={currentUser}
+      onLogout={handleLogout}
+      onIdentityRefresh={refreshIdentity}
+    />
+  );
 }

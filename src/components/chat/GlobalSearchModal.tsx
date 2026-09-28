@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Search, X } from 'lucide-react';
+import { Search, X, Filter } from 'lucide-react';
 import Avatar from './Avatar';
 import { formatClock } from '@/utils/date-utils';
 
@@ -16,6 +16,15 @@ interface SearchResult {
   roomType: string;
 }
 
+const TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: 'all', label: '全部类型' },
+  { value: 'text', label: '文字' },
+  { value: 'image', label: '图片' },
+  { value: 'video', label: '视频' },
+  { value: 'voice', label: '语音' },
+  { value: 'file', label: '文件' },
+];
+
 interface GlobalSearchModalProps {
   onClose: () => void;
   /** 选中某条结果：跳转到该条消息（传 roomId + 具体 messageId 以定位高亮） */
@@ -25,6 +34,11 @@ interface GlobalSearchModalProps {
 /** 全局跨会话消息搜索弹层：复用 /api/messages/search，结果点击后跳转到对应房间。 */
 const GlobalSearchModal: React.FC<GlobalSearchModalProps> = React.memo(({ onClose, onSelect }) => {
   const [query, setQuery] = useState('');
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [sender, setSender] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [showFilters, setShowFilters] = useState(false);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
@@ -43,8 +57,8 @@ const GlobalSearchModal: React.FC<GlobalSearchModalProps> = React.memo(({ onClos
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const runSearch = useCallback(async (q: string) => {
-    const term = q.trim();
+  const runSearch = useCallback(async () => {
+    const term = query.trim();
     if (term.length === 0) {
       setResults([]);
       setSearched(false);
@@ -53,7 +67,12 @@ const GlobalSearchModal: React.FC<GlobalSearchModalProps> = React.memo(({ onClos
     }
     setLoading(true);
     try {
-      const res = await fetch(`/api/messages/search?q=${encodeURIComponent(term)}`);
+      const params = new URLSearchParams({ q: term });
+      if (typeFilter !== 'all') params.set('type', typeFilter);
+      if (sender.trim()) params.set('sender', sender.trim());
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      const res = await fetch(`/api/messages/search?${params.toString()}`);
       const data = await res.json();
       setResults(data.success ? (data.results || []) : []);
     } catch {
@@ -62,12 +81,26 @@ const GlobalSearchModal: React.FC<GlobalSearchModalProps> = React.memo(({ onClos
       setLoading(false);
       setSearched(true);
     }
-  }, []);
+  }, [query, typeFilter, sender, from, to]);
 
-  const onChange = (v: string) => {
+  // 任一筛选条件变化（且已输入关键词）即重新检索
+  useEffect(() => {
+    if (query.trim().length === 0) {
+      setResults([]);
+      setSearched(false);
+      return;
+    }
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = window.setTimeout(() => runSearch(), 300);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [query, typeFilter, sender, from, to, runSearch]);
+
+  const onQueryChange = (v: string) => {
     setQuery(v);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = window.setTimeout(() => runSearch(v), 300);
+    debounceRef.current = window.setTimeout(() => runSearch(), 300);
   };
 
   return (
@@ -88,19 +121,77 @@ const GlobalSearchModal: React.FC<GlobalSearchModalProps> = React.memo(({ onClos
           <input
             ref={inputRef}
             value={query}
-            onChange={(e) => onChange(e.target.value)}
+            onChange={(e) => onQueryChange(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') runSearch(query);
+              if (e.key === 'Enter') runSearch();
             }}
             placeholder="搜索消息内容（跨所有会话）"
             maxLength={100}
             className="flex-1 h-full bg-transparent text-[15px] text-foreground outline-none placeholder:text-muted-foreground"
           />
+          <button
+            onClick={() => setShowFilters((v) => !v)}
+            className={`p-1.5 rounded-lg transition-colors ${showFilters ? 'bg-primary/10 text-primary' : 'hover:bg-muted text-muted-foreground'}`}
+            aria-label="筛选"
+            aria-expanded={showFilters}
+            title="筛选"
+          >
+            <Filter className="w-4 h-4" />
+          </button>
           {loading && <span className="text-xs text-muted-foreground">搜索中…</span>}
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-muted" aria-label="关闭">
             <X className="w-5 h-5 text-muted-foreground" />
           </button>
         </div>
+
+        {/* 高级筛选 */}
+        {showFilters && (
+          <div className="px-4 py-3 border-b border-border flex flex-col gap-2.5 bg-muted/30">
+            <div className="flex items-center gap-2">
+              <span className="text-[12px] text-muted-foreground w-12 flex-shrink-0">类型</span>
+              <select
+                value={typeFilter}
+                onChange={(e) => setTypeFilter(e.target.value)}
+                className="h-8 flex-1 rounded-lg border border-border bg-background px-2 text-[13px] text-foreground focus:outline-none"
+              >
+                {TYPE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[12px] text-muted-foreground w-12 flex-shrink-0">发送者</span>
+              <input
+                value={sender}
+                onChange={(e) => setSender(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') runSearch(); }}
+                placeholder="按展示名筛选（可留空）"
+                className="h-8 flex-1 rounded-lg border border-border bg-background px-2 text-[13px] text-foreground focus:outline-none placeholder:text-muted-foreground"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[12px] text-muted-foreground w-12 flex-shrink-0">时间</span>
+              <input
+                type="date"
+                value={from}
+                onChange={(e) => setFrom(e.target.value)}
+                className="h-8 flex-1 rounded-lg border border-border bg-background px-2 text-[13px] text-foreground focus:outline-none"
+                aria-label="起始日期"
+              />
+              <span className="text-[12px] text-muted-foreground">至</span>
+              <input
+                type="date"
+                value={to}
+                onChange={(e) => setTo(e.target.value)}
+                className="h-8 flex-1 rounded-lg border border-border bg-background px-2 text-[13px] text-foreground focus:outline-none"
+                aria-label="结束日期"
+              />
+            </div>
+          </div>
+        )}
+
 
         {/* 结果列表 */}
         <div className="flex-1 overflow-y-auto">
@@ -128,7 +219,12 @@ const GlobalSearchModal: React.FC<GlobalSearchModalProps> = React.memo(({ onClos
                 </div>
                 <div className="text-[13px] text-muted-foreground truncate">
                   <span className="text-foreground/70">{r.user}: </span>
-                  {r.content}
+                  {r.type !== 'text' && (
+                    <span className="inline-block text-[11px] text-primary/80 border border-primary/30 rounded px-1 mr-1 leading-tight align-middle">
+                      {r.type === 'image' ? '图片' : r.type === 'video' ? '视频' : r.type === 'voice' ? '语音' : '文件'}
+                    </span>
+                  )}
+                  {r.type === 'text' ? r.content : `[${r.type === 'image' ? '图片' : r.type === 'video' ? '视频' : r.type === 'voice' ? '语音' : '文件'}]`}
                 </div>
               </div>
             </button>

@@ -1,16 +1,11 @@
 ﻿import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { extractSession } from '@/lib/auth';
+import { createServerClient } from '@supabase/ssr';
 import { checkRateLimit, getRateLimitConfig, getClientIp } from '@/lib/rate-limit';
 
-// 公开的 API 路由（不需要普通聊天会话）
+// 公开 API 路由（不需要已登录的 Supabase Auth 会话）
 const PUBLIC_API_ROUTES = [
-  // 注册 / 登录 / 登出：账号体系的入口，必须免会话
-  '/api/auth/register',
-  '/api/auth/login',
-  '/api/auth/logout',
-  // 保活端点：供外部 uptime 监控（或本项目 GitHub Actions 定时任务）无 cookie 访问，
-  // 用于防止 Supabase 免费项目因长时间无活动被自动暂停。必须公开，否则监控一 ping 就被 401 挡掉。
+  // 保活端点：供外部 uptime 监控无 cookie 访问，防止 Supabase 免费项目因长时间无活动被暂停
   '/api/keepalive',
 ];
 
@@ -47,42 +42,6 @@ export async function middleware(request: NextRequest) {
     );
   }
 
-  // 管理后台登录/登出端点自身验证密码，无需会话即可访问
-  if (pathname.startsWith('/api/admin/verify')) {
-    const response = NextResponse.next();
-    Object.entries(rateLimitHeaders).forEach(([k, v]) => response.headers.set(k, v));
-    return response;
-  }
-
-  const jwtSecret = process.env.CHAT_JWT_SECRET;
-  if (!jwtSecret) {
-    const isDev = process.env.NODE_ENV === 'development';
-    if (isDev) {
-      console.warn('[middleware] CHAT_JWT_SECRET 未配置，开发模式下放行所有 API 请求');
-      return NextResponse.next();
-    }
-    return NextResponse.json(
-      { success: false, message: '服务器配置错误' },
-      { status: 500 }
-    );
-  }
-
-  const cookieHeader = request.headers.get('cookie');
-
-  // 管理后台受保护路由：始终要求独立的 admin_session（isAdmin:true），不受聊天开关影响
-  if (pathname.startsWith('/api/admin/')) {
-    const adminSession = await extractSession(cookieHeader, jwtSecret, 'admin_session');
-    if (!adminSession.valid || adminSession.payload?.isAdmin !== true) {
-      return NextResponse.json(
-        { success: false, message: '未认证的管理员会话，请先登录管理后台' },
-        { status: 401 }
-      );
-    }
-    const response = NextResponse.next();
-    Object.entries(rateLimitHeaders).forEach(([k, v]) => response.headers.set(k, v));
-    return response;
-  }
-
   // 公开路由无需认证
   if (PUBLIC_API_ROUTES.some((route) => pathname.startsWith(route))) {
     const response = NextResponse.next();
@@ -90,16 +49,64 @@ export async function middleware(request: NextRequest) {
     return response;
   }
 
-  // 普通聊天会话 JWT 验证（注册/登录体系下，只有通过账号登录才能拿到会话）
-  const session = await extractSession(cookieHeader, jwtSecret);
-  if (!session.valid) {
+  // ===== Supabase Auth 会话校验 =====
+  // 用 @supabase/ssr 从请求 cookie 读取会话；getUser() 会验签，拿到真实的 auth.uid()。
+  let response = NextResponse.next({
+    request: {
+      headers: request.headers,
+    },
+  });
+
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
+    process.env.NEXT_PUBLIC_SUPABASE_KEY ?? '',
+    {
+      // 与浏览器客户端保持一致（见 supabase.ts）：否则两端 cookie 名不同，会话读不到。
+      cookieOptions: { name: 'sb-app-auth-token' },
+      cookies: {
+        getAll() {
+          return request.cookies.getAll().map((c) => ({ name: c.name, value: c.value }));
+        },
+        setAll(cookiesToSet: { name: string; value: string; options?: Record<string, unknown> }[]) {
+          cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
+          response = NextResponse.next({
+            request: {
+              headers: request.headers,
+            },
+          });
+          cookiesToSet.forEach(({ name, value, options }) => response.cookies.set(name, value, options));
+        },
+      },
+    }
+  );
+
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser();
+
+  if (error || !user) {
     return NextResponse.json(
       { success: false, message: '未认证，请先登录' },
       { status: 401 }
     );
   }
 
-  const response = NextResponse.next();
+  // 管理后台受保护路由：额外校验 users.role = 'admin'
+  if (pathname.startsWith('/api/admin/')) {
+    const { data: profile } = await supabase
+      .from('users')
+      .select('role')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (!profile || profile.role !== 'admin') {
+      return NextResponse.json(
+        { success: false, message: '未认证的管理员会话' },
+        { status: 403 }
+      );
+    }
+  }
+
   Object.entries(rateLimitHeaders).forEach(([k, v]) => response.headers.set(k, v));
   return response;
 }

@@ -8,7 +8,10 @@ import { generateId } from '@/utils/id';
 import { UPLOAD_CONFIG, API_CONFIG } from '@/config';
 
 interface UseFileUploadProps {
+  /** 展示名（写入 messages.user，仅展示） */
   user: string;
+  /** 发送者 Supabase Auth UUID（写入 messages.user_id，身份键） */
+  userId: string;
   roomId: string;
   sendMessage: (message: Message) => void;
 }
@@ -37,7 +40,7 @@ function isFileMimeType(mime: string): boolean {
   return fileTypes.includes(mime);
 }
 
-export const useFileUpload = ({ user, roomId, sendMessage }: UseFileUploadProps) => {
+export const useFileUpload = ({ user, userId, roomId, sendMessage }: UseFileUploadProps) => {
   const [uploading, setUploading] = useState(false);
   const [uploadingMessages, setUploadingMessages] = useState<Map<string, UploadItem>>(new Map());
 
@@ -192,6 +195,7 @@ export const useFileUpload = ({ user, roomId, sendMessage }: UseFileUploadProps)
         const newMsg: Message = {
           id: generateId(),
           user: user.trim(),
+          userId,
           type: isImage ? 'image' : isAudio ? 'voice' : isGenericFile ? 'file' : 'video',
           content: fileUrl,
           timestamp: new Date().toISOString(),
@@ -220,7 +224,7 @@ export const useFileUpload = ({ user, roomId, sendMessage }: UseFileUploadProps)
         e.target.value = '';
       }
     },
-    [uploading, user, sendMessage, compressImage, formatFileSize, updateProgress, uploadToSupabase, uploadToImgBB]
+    [uploading, user, userId, sendMessage, compressImage, formatFileSize, updateProgress, uploadToSupabase, uploadToImgBB]
   );
 
   const handleVoiceUpload = useCallback(
@@ -246,6 +250,7 @@ export const useFileUpload = ({ user, roomId, sendMessage }: UseFileUploadProps)
         const newMsg: Message = {
           id: generateId(),
           user: user.trim(),
+          userId,
           type: 'voice',
           content: fileUrl,
           timestamp: new Date().toISOString(),
@@ -266,7 +271,7 @@ export const useFileUpload = ({ user, roomId, sendMessage }: UseFileUploadProps)
         setUploading(false);
       }
     },
-    [uploading, user, sendMessage, updateProgress, uploadToSupabase]
+    [uploading, user, userId, sendMessage, updateProgress, uploadToSupabase]
   );
 
   return {

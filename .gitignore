@@ -42,3 +42,7 @@ next-env.d.ts
 
 # workbuddy
 .workbuddy/
+
+# cloudflare worker / next backups
+.next-bak-*
+.next-old-*

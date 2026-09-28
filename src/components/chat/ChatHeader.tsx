@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { ChevronLeft, MoreHorizontal, Users, LogOut, Search, X } from 'lucide-react';
+import { ChevronLeft, MoreHorizontal, Users, LogOut, Search, X, Eraser } from 'lucide-react';
 import { PresenceUser } from '@/hooks/usePresence';
 import ThemeToggle from '@/components/chat/ThemeToggle';
 import Avatar from '@/components/chat/Avatar';
@@ -11,6 +11,10 @@ interface ChatHeaderProps {
   onlineUsers?: PresenceUser[];
   isDM?: boolean;
   dmOtherUser?: string | null;
+  /** 私聊对方 UUID（在线判定改用全局在线集合，而非仅同房间 presence） */
+  dmOtherUserId?: string | null;
+  /** 全局在线用户 UUID 集合（来自 useGlobalPresence） */
+  globalOnlineIds?: string[];
   dmOtherAvatar?: string | null;
   /** 群成员数（群聊标题后缀，微信风格） */
   memberCount?: number;
@@ -21,6 +25,8 @@ interface ChatHeaderProps {
   onOpenMembers?: () => void;
   /** 删除/退出/隐藏当前会话（群聊=退出群聊；私聊=从自己列表隐藏） */
   onDeleteRoom?: () => void;
+  /** 清空聊天记录（微信语义：只清本机，不影响其他成员） */
+  onClearHistory?: () => void;
   /** 消息搜索：是否展开搜索框 */
   searchOpen?: boolean;
   /** 搜索关键词 */
@@ -36,12 +42,15 @@ const ChatHeader: React.FC<ChatHeaderProps> = React.memo(({
   onlineUsers = [],
   isDM = false,
   dmOtherUser = null,
+  dmOtherUserId = null,
+  globalOnlineIds = [],
   dmOtherAvatar = null,
   memberCount = 0,
   otherTyping = false,
   onBack,
   onOpenMembers,
   onDeleteRoom,
+  onClearHistory,
   searchOpen = false,
   searchQuery = '',
   onToggleSearch,
@@ -110,7 +119,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = React.memo(({
               <div className="text-[11px] text-muted-foreground leading-tight">
                 {otherTyping
                   ? '对方正在输入…'
-                  : onlineUsers.some((u) => u.nickname === dmOtherUser)
+                  : (dmOtherUserId && globalOnlineIds.includes(dmOtherUserId))
                     ? '在线'
                     : '离线'}
               </div>
@@ -165,10 +174,19 @@ const ChatHeader: React.FC<ChatHeaderProps> = React.memo(({
                   <span className="text-sm text-foreground">群聊信息</span>
                 </button>
               )}
+              {onClearHistory && (
+                <button
+                  onClick={() => { setMenuOpen(false); onClearHistory(); }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-muted transition-colors text-left border-t border-border"
+                >
+                  <Eraser className="w-4 h-4 text-muted-foreground" />
+                  <span className="text-sm text-foreground">清空聊天记录</span>
+                </button>
+              )}
               {onDeleteRoom && (
                 <button
                   onClick={() => { setMenuOpen(false); onDeleteRoom(); }}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-destructive/10 transition-colors text-left ${!isDM ? 'border-t border-border' : ''}`}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-destructive/10 transition-colors text-left ${!isDM || onClearHistory ? 'border-t border-border' : ''}`}
                 >
                   <LogOut className="w-4 h-4 text-destructive" />
                   <span className="text-sm text-destructive">{isDM ? '删除私聊' : '退出群聊'}</span>

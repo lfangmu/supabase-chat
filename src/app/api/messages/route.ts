@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
 import { MESSAGE_CONFIG } from '@/config';
-import { getSessionUser } from '@/lib/auth';
+import { getAuthUser, getDisplayName } from '@/lib/auth-user';
 import { isRoomParticipant } from '@/lib/rooms';
 
 export const runtime = 'edge';
-
 
 // Load messages (initial load + cursor pagination)
 export async function GET(request: NextRequest) {
@@ -30,7 +29,7 @@ export async function GET(request: NextRequest) {
     }
 
     // 只能读取自己所在房间的消息（防未授权读取他人聊天记录）
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }
@@ -60,7 +59,10 @@ export async function GET(request: NextRequest) {
         );
       }
 
-      return NextResponse.json({ success: true, messages: data || [] });
+      return NextResponse.json({
+        success: true,
+        messages: (data || []).map((m) => ({ ...m, userId: m.user_id, forwardedFrom: m.forwarded_from ?? null })),
+      });
     }
 
     let query = supabase
@@ -87,7 +89,7 @@ export async function GET(request: NextRequest) {
     // Return in chronological order (oldest first)
     return NextResponse.json({
       success: true,
-      messages: (data || []).reverse(),
+      messages: (data || []).reverse().map((m) => ({ ...m, userId: m.user_id, forwardedFrom: m.forwarded_from ?? null })),
     });
   } catch {
     return NextResponse.json(
@@ -100,20 +102,22 @@ export async function GET(request: NextRequest) {
 // Insert a new message
 export async function POST(request: NextRequest) {
   try {
-    // 只能以「自己」的身份发消息（防身份伪造）
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    // 只能以「自己」的身份发消息（actor 是 Supabase Auth 的 UUID）
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }
     const body = await request.json();
-    const { id, room_id, user, type, content, timestamp, quote_id, quote } = body;
+    const { id, room_id, type, content, timestamp, quote_id, quote } = body;
 
     // REQ-010: File metadata fields
     const file_name = body.file_name ?? null;
     const file_size = body.file_size ?? null;
     const file_mime = body.file_mime ?? null;
+    // 转发来源（被转发消息的原始 id；非转发时为 null）
+    const forwarded_from = body.forwarded_from ?? null;
 
-    if (!id || !room_id || !user || !type || content === undefined || !timestamp) {
+    if (!id || !room_id || !type || content === undefined || !timestamp) {
       return NextResponse.json(
         { success: false, message: '缺少必填字段' },
         { status: 400 }
@@ -128,22 +132,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (typeof user !== 'string' || user.length > 50) {
-      return NextResponse.json(
-        { success: false, message: '用户名过长' },
-        { status: 400 }
-      );
-    }
-
-    if (user !== actor) {
-      return NextResponse.json(
-        { success: false, message: '只能以本人身份发送' },
-        { status: 403 }
-      );
-    }
+    // 展示名从「当前会话的身份资料」解析，绝不信任请求体里的展示名（防伪造）
+    const supabase = getServiceClient();
+    const displayName = (await getDisplayName(supabase, actor)) ?? '匿名用户';
 
     // 只能向自己所在的房间发送（防向任意房间灌水 / 越权发消息）
-    const supabase = getServiceClient();
     if (!(await isRoomParticipant(room_id, actor, supabase))) {
       return NextResponse.json(
         { success: false, message: '无权向该房间发送消息' },
@@ -158,7 +151,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Reject malformed room IDs (allow ':' for DM rooms like "dm:昵称")
+    // Reject malformed room IDs (allow ':' for DM rooms like "dm:<uuidA>:<uuidB>")
     if (!/^[a-zA-Z0-9\u4e00-\u9fff_:-]+$/.test(room_id) || room_id.length > 200) {
       return NextResponse.json(
         { success: false, message: '无效的群聊 ID' },
@@ -167,14 +160,14 @@ export async function POST(request: NextRequest) {
     }
 
     // 幂等写入：以客户端生成的 id 为主键，重复提交（网络重试 / 超时重发）直接忽略，
-    // 返回 duplicate 标志。避免「服务端已落库但客户端误判失败 → 消息卡在 failed 且永不广播」的孤儿消息。
-    // 这是借鉴 EdgeChat clientMessageId 语义、但在 Supabase 上最自然的等价实现（upsert-ignore）。
-    const { data, error } = await supabase
+    // 避免「服务端已落库但客户端误判失败 → 消息卡在 failed」的孤儿消息。
+    const { error } = await supabase
       .from('messages')
       .insert([{
         id,
         room_id,
-        user,
+        user_id: actor,
+        user: displayName,
         type,
         content,
         timestamp,
@@ -183,8 +176,8 @@ export async function POST(request: NextRequest) {
         file_name,
         file_size,
         file_mime,
-      }], { onConflict: 'id', ignoreDuplicates: true } as any)
-      .select('id');
+        forwarded_from,
+      }], { onConflict: 'id', ignoreDuplicates: true } as any);
 
     if (error) {
       console.error('保存消息失败:', error);
@@ -194,61 +187,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const duplicate = !data || data.length === 0;
-
-    // 服务端权威送达（路B）：真实落库成功后，由 Edge Function 主动把消息（已用
-    // Ed25519 私钥签名）广播到 `chat-room:<room_id>` 频道，不依赖发方客户端 WS
-    // 是否在线，且客户端会校验签名、丢弃伪造/未签名消息。这是消息送达的唯一广播源
-    // （发送方不再向他人广播消息内容，杜绝同房间参与者伪造）。
-    // 仅在「真实插入」时触发；幂等重试（duplicate）不重复广播。
-    if (!duplicate) {
-      try {
-        const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-        const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-        if (supabaseUrl && serviceKey) {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 3000);
-          await fetch(`${supabaseUrl}/functions/v1/broadcast-message`, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${serviceKey}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              room_id,
-              message: {
-                id,
-                user,
-                type,
-                content,
-                timestamp,
-                quoteId: quote_id ?? null,
-                quote: quote ?? null,
-                file_name: file_name ?? null,
-                file_size: file_size ?? null,
-                file_mime: file_mime ?? null,
-              },
-            }),
-            signal: controller.signal,
-          }).finally(() => clearTimeout(timer));
-        }
-      } catch (broadcastErr) {
-        // 服务端广播失败不影响消息落库；未实时收到的客户端会在下次同步/刷新时从数据库补偿。
-        console.error('服务端广播失败（客户端将在同步/刷新时从 DB 补偿）:', broadcastErr);
-      }
-    }
+    // 消息已落库即为权威源。其他在线成员通过 Postgres Changes（CDC + RLS）实时收到，
+    // 无需服务端另行广播；幂等写入（ignoreDuplicates）保证网络重试不会产生重复消息。
 
     // Update room's last message info (fire-and-forget)
     supabase.from('rooms').update({
       last_message_at: timestamp,
       last_message_content: type === 'text' ? content : null,
       last_message_type: type,
-      last_message_user: user,
+      last_message_user: displayName,
     }).eq('id', room_id).then(({ error: updateError }) => {
       if (updateError) console.error('更新房间最新消息失败:', updateError);
     });
 
-    return NextResponse.json({ success: true, duplicate });
+    return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json(
       { success: false, message: '服务器内部错误' },
@@ -260,7 +212,7 @@ export async function POST(request: NextRequest) {
 // Edit a message (ownership verified)
 export async function PUT(request: NextRequest) {
   try {
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }
@@ -285,7 +237,7 @@ export async function PUT(request: NextRequest) {
     // Verify ownership（以会话身份为准，不信任请求体里的 user）
     const { data: message, error: fetchError } = await supabase
       .from('messages')
-      .select('user')
+      .select('user_id')
       .eq('id', id)
       .single();
 
@@ -296,7 +248,7 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    if (message.user !== actor) {
+    if (message.user_id !== actor) {
       return NextResponse.json(
         { success: false, message: '无权编辑此消息' },
         { status: 403 }
@@ -328,7 +280,7 @@ export async function PUT(request: NextRequest) {
 // Withdraw a message (ownership verified, extended for file type)
 export async function DELETE(request: NextRequest) {
   try {
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }
@@ -346,7 +298,7 @@ export async function DELETE(request: NextRequest) {
     // Verify ownership（以会话身份为准，不信任请求体里的 user）
     const { data: message, error: fetchError } = await supabase
       .from('messages')
-      .select('user, content, type')
+      .select('user_id, content, type')
       .eq('id', id)
       .single();
 
@@ -357,7 +309,7 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    if (message.user !== actor) {
+    if (message.user_id !== actor) {
       return NextResponse.json(
         { success: false, message: '无权操作此消息' },
         { status: 403 }

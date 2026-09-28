@@ -5,13 +5,16 @@ import { Message } from '@/types';
 import { STORAGE_CONFIG_KEYS, API_CONFIG } from '@/config';
 import { safeSetCache } from '@/utils/cacheUtils';
 import { showError } from '@/utils/errorHandler';
-import type { RealtimeChannel } from '@supabase/supabase-js';
+import type { SendBroadcast } from '@/lib/realtimeRelay';
 
 interface UseMessageActionsParams {
   roomId: string;
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
-  channelRef: React.MutableRefObject<RealtimeChannel | null>;
-  globalChannelRef: React.MutableRefObject<RealtimeChannel | null>;
+  /**
+   * 服务端中继的广播出口（替代 supabase.channel 的 send）。
+   * 传 '__global__' 作为 roomId 即发到全局 chat-events 频道（room-updated / new-dm）。
+   */
+  sendBroadcast: SendBroadcast;
   processedIdsRef: React.MutableRefObject<Set<string>>;
   messagesRef: React.MutableRefObject<Message[]>;
   onMessageSent?: () => void;
@@ -20,8 +23,7 @@ interface UseMessageActionsParams {
 export function useMessageActions({
   roomId,
   setMessages,
-  channelRef,
-  globalChannelRef,
+  sendBroadcast,
   processedIdsRef,
   messagesRef,
   onMessageSent,
@@ -48,6 +50,7 @@ export function useMessageActions({
             file_name: message.file_name ?? null,
             file_size: message.file_size ?? null,
             file_mime: message.file_mime ?? null,
+            forwarded_from: message.forwardedFrom ?? null,
           }),
         });
         if (res.status === 401) {
@@ -86,30 +89,22 @@ export function useMessageActions({
           )
         );
         if (success) {
-          // 不再由客户端广播 chat-message：改由服务端 Edge Function（broadcast-message）
-          // 签名后广播（路B），客户端校验签名后才渲染，杜绝同房间参与者伪造消息。
-          // 发送方本地消息已由乐观插入 + POST 响应展示，无需自广播。
+          // 消息落库后由数据库 Postgres Changes 实时推送给同房间成员
+          // （CDC + RLS，天然防伪造、无需签名）。发送方本地消息已由乐观插入 +
+          // POST 响应展示，无需自广播。
           // Notify all clients to refresh their chat list
-          globalChannelRef.current?.send({
-            type: 'broadcast',
-            event: 'room-updated',
-            payload: { roomId },
-          });
+          sendBroadcast('__global__', 'room-updated', { roomId });
           // For DM rooms, tell the other participant to discover this room in real-time
           // (they may not yet be subscribed to its channel).
           if (roomId.startsWith('dm:')) {
-            globalChannelRef.current?.send({
-              type: 'broadcast',
-              event: 'new-dm',
-              payload: { roomId },
-            });
+            sendBroadcast('__global__', 'new-dm', { roomId });
           }
           // Refresh sender's own room list (self: false means they don't get the broadcast)
           onMessageSentRef.current?.();
         }
       });
     },
-    [persistMessage, setMessages, channelRef, globalChannelRef, processedIdsRef, roomId]
+    [persistMessage, setMessages, sendBroadcast, processedIdsRef, roomId]
   );
 
   // Retry sending a failed message
@@ -130,29 +125,21 @@ export function useMessageActions({
           )
         );
         if (success) {
-          // 不再由客户端广播 chat-message：改由服务端 Edge Function（broadcast-message）
-          // 签名后广播（路B），客户端校验签名后才渲染，杜绝同房间参与者伪造消息。
-          // 发送方本地消息已由乐观插入 + POST 响应展示，无需自广播。
+          // 消息落库后由数据库 Postgres Changes 实时推送给同房间成员
+          // （CDC + RLS，天然防伪造、无需签名）。发送方本地消息已由乐观插入 +
+          // POST 响应展示，无需自广播。
           // Notify all clients to refresh their chat list
-          globalChannelRef.current?.send({
-            type: 'broadcast',
-            event: 'room-updated',
-            payload: { roomId },
-          });
+          sendBroadcast('__global__', 'room-updated', { roomId });
           // For DM rooms, tell the other participant to discover this room in real-time
           if (roomId.startsWith('dm:')) {
-            globalChannelRef.current?.send({
-              type: 'broadcast',
-              event: 'new-dm',
-              payload: { roomId },
-            });
+            sendBroadcast('__global__', 'new-dm', { roomId });
           }
           // Refresh sender's own room list
           onMessageSentRef.current?.();
         }
       });
     },
-    [persistMessage, setMessages, channelRef, globalChannelRef, messagesRef, roomId]
+    [persistMessage, setMessages, sendBroadcast, messagesRef, roomId]
   );
 
   // Withdraw message — 服务端校验归属 + 2 分钟时限，成功后再本地软撤回并广播，
@@ -185,13 +172,13 @@ export function useMessageActions({
         return updated;
       });
 
-      channelRef.current?.send({
-        type: 'broadcast',
-        event: 'withdraw-message',
-        payload: { id: messageId, withdrawn_at: withdrawnAt },
+      // 走服务端中继广播给同房间其他客户端（HTTP POST，国内可达）
+      sendBroadcast(roomId, 'withdraw-message', {
+        id: messageId,
+        withdrawn_at: withdrawnAt,
       });
     },
-    [roomId, setMessages, channelRef]
+    [roomId, setMessages, sendBroadcast]
   );
 
   // Edit message — optimistic update + server PUT + broadcast
@@ -199,6 +186,7 @@ export function useMessageActions({
     async (messageId: string, user: string, newContent: string) => {
       const prevMessages = messagesRef.current;
 
+      // 乐观更新（本地先显示新内容）
       const editedAt = new Date().toISOString();
       setMessages((prev) => {
         const updated = prev.map((m) =>
@@ -208,12 +196,8 @@ export function useMessageActions({
         return updated;
       });
 
-      channelRef.current?.send({
-        type: 'broadcast',
-        event: 'edit-message',
-        payload: { id: messageId, content: newContent, edited_at: editedAt },
-      });
-
+      // 先落库，服务端校验通过后再广播给同房间其他客户端。
+      // 否则 PUT 失败时本地已回滚、对端却保留了编辑，状态不一致（与 withdrawMessage 保持一致）。
       try {
         const res = await fetch(API_CONFIG.MESSAGES_ENDPOINT, {
           method: 'PUT',
@@ -222,15 +206,23 @@ export function useMessageActions({
         });
 
         if (!res.ok) {
+          // 服务端拒绝：回滚本地与缓存
           setMessages(prevMessages);
           safeSetCache(`${STORAGE_CONFIG_KEYS.MESSAGES_PREFIX}${roomId}`, prevMessages);
+          return;
         }
+        // 成功才广播（走服务端中继）
+        sendBroadcast(roomId, 'edit-message', {
+          id: messageId,
+          content: newContent,
+          edited_at: editedAt,
+        });
       } catch {
         setMessages(prevMessages);
         safeSetCache(`${STORAGE_CONFIG_KEYS.MESSAGES_PREFIX}${roomId}`, prevMessages);
       }
     },
-    [roomId, setMessages, channelRef, messagesRef]
+    [roomId, setMessages, sendBroadcast, messagesRef]
   );
 
   return { sendMessage, retryMessage, withdrawMessage, editMessage };

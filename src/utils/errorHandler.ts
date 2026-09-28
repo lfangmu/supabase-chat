@@ -40,11 +40,18 @@ export const createError = (type: ErrorType, details?: string): AppError => {
 
 // 显示错误提示
 export const showError = (error: AppError | string) => {
-  const errorObj = typeof error === 'string'
-    ? createError(ErrorType.UNKNOWN_ERROR, error)
-    : error;
+  // 调用方直接传入字符串时，该字符串本身就是面向用户的友好文案，原样展示
+  if (typeof error === 'string') {
+    toast.error(error);
+    return;
+  }
 
-  toast.error(`${errorObj.message}${errorObj.details ? ` — ${errorObj.details}` : ''}`);
+  // AppError：只向用户展示友好的 message；技术细节（如原始 error.message）仅记录到
+  // 控制台，避免把后端/网络内部信息暴露给普通用户
+  toast.error(error.message);
+  if (error.details) {
+    console.error('[error]', error.details);
+  }
 };
 
 // 显示成功提示

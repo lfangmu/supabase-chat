@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
-import { getSessionUser } from '@/lib/auth';
+import { getAuthUser } from '@/lib/auth-user';
 import { isRoomParticipant } from '@/lib/rooms';
 
 const SIGNED_URL_EXPIRY = 3600; // 1 hour
@@ -8,7 +8,7 @@ const SIGNED_URL_EXPIRY = 3600; // 1 hour
 export async function POST(request: NextRequest) {
   try {
     // 仅登录用户可生成签名 URL（防未授权滥用对象存储）
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }

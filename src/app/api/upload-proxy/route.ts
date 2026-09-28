@@ -1,20 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { extractSession } from '@/lib/auth';
+import { getAuthUser } from '@/lib/auth-user';
 
 export async function POST(request: NextRequest) {
   try {
-    const jwtSecret = process.env.CHAT_JWT_SECRET;
-    if (!jwtSecret) {
-      return NextResponse.json(
-        { success: false, message: '服务器配置错误' },
-        { status: 500 }
-      );
-    }
-
-    // Require authentication
-    const cookieHeader = request.headers.get('cookie');
-    const session = await extractSession(cookieHeader, jwtSecret);
-    if (!session.valid) {
+    // Require authentication（身份以 Supabase Auth 的 UUID 为准）
+    const actor = await getAuthUser(request);
+    if (!actor) {
       return NextResponse.json(
         { success: false, message: '未认证' },
         { status: 401 }

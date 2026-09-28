@@ -1,47 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
-import { getSessionUser } from '@/lib/auth';
+import { getAuthUser, getDisplayName } from '@/lib/auth-user';
 
 export const runtime = 'edge';
 
 
-/** GET /api/dm-list?user={nickname} — Get DM rooms for a user */
+/** GET /api/dm-list — Get DM rooms for the current user (identity = UUID) */
 export async function GET(request: NextRequest) {
   try {
     // 只能查自己的私聊列表（防枚举他人私聊关系）
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json(
         { success: false, message: '未登录' },
         { status: 401 }
       );
     }
-    const { searchParams } = new URL(request.url);
-    const user = searchParams.get('user');
 
-    if (!user) {
-      return NextResponse.json(
-        { success: false, message: '缺少 user 参数' },
-        { status: 400 }
-      );
-    }
-
-    const trimmedUser = user.trim();
-    if (trimmedUser !== actor) {
-      return NextResponse.json(
-        { success: false, message: '只能查看自己的私聊' },
-        { status: 403 }
-      );
-    }
     const supabase = getServiceClient();
 
-    // Query rooms where type='dm' and user is either creator or the other participant
-    // created_by stores the initiator, name stores the other user's nickname
+    // 私聊房间 id 形如 dm:<uuidA>:<uuidB>，actor 须为其中一方参与者
+    const dmPattern1 = `dm:${actor}:%`;
+    const dmPattern2 = `dm:%:${actor}`;
     const { data: dmRooms, error } = await supabase
       .from('rooms')
       .select('*')
       .eq('type', 'dm')
-      .or(`created_by.eq.${trimmedUser},name.eq.${trimmedUser}`)
+      .or(`id.like.${dmPattern1},id.like.${dmPattern2}`)
       .order('created_at', { ascending: false })
       .limit(100);
 
@@ -53,23 +38,36 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Transform to DMRoom format with participants and otherUser
+    // 收集对方 UUID，批量查 display_name（绝不依赖昵称）
+    const otherIds = (dmRooms || []).map((room: { id: string }) => {
+      const parts = room.id.slice(3).split(':');
+      return (parts.find((p: string) => p !== actor) || actor) as string;
+    });
+    const { data: profiles } = await supabase
+      .from('users')
+      .select('id, display_name')
+      .in('id', otherIds);
+    const nameMap = new Map<string, string | null>(
+      (profiles || []).map((p: { id: string; display_name: string | null }) => [p.id, p.display_name])
+    );
+
+    // Transform to DMRoom format with participants and otherUser (UUID)
     const rooms = (dmRooms || []).map((room: Record<string, unknown>) => {
-      const createdBy = room.created_by as string;
-      const name = room.name as string;
-      const otherUser = createdBy === trimmedUser ? name : createdBy;
+      const parts = (room.id as string).slice(3).split(':');
+      const other = (parts.find((p: string) => p !== actor) || actor) as string;
+      const displayName = nameMap.get(other) ?? other;
       return {
         id: room.id as string,
-        name: name as string,
-        created_by: createdBy,
+        name: displayName,
+        created_by: room.created_by as string,
         created_at: room.created_at as string,
         type: 'dm' as const,
         last_message_at: room.last_message_at ?? null,
         last_message_content: room.last_message_content ?? null,
         last_message_type: room.last_message_type ?? null,
         last_message_user: room.last_message_user ?? null,
-        participants: [createdBy, name] as [string, string],
-        otherUser,
+        participants: [actor, other] as [string, string],
+        otherUser: other,
       };
     });
 

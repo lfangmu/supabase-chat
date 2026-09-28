@@ -7,11 +7,12 @@ import { UserProfile } from '@/types';
 import { showError, showSuccess } from '@/utils/errorHandler';
 
 interface MePageProps {
+  /** 展示名（身份是 UUID，这里只用于展示） */
   currentUser: string;
   profile: UserProfile | null;
   friendCount: number;
   groupCount: number;
-  onSaveProfile: (patch: { avatar?: string | null; signature?: string }) => Promise<UserProfile | null>;
+  onSaveProfile: (patch: { avatar?: string | null; signature?: string; display_name?: string }) => Promise<UserProfile | null>;
   onLogout: () => void;
 }
 
@@ -25,6 +26,8 @@ const MePage: React.FC<MePageProps> = ({
 }) => {
   const [editingSig, setEditingSig] = useState(false);
   const [sigDraft, setSigDraft] = useState(profile?.signature || '');
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(profile?.display_name || currentUser);
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -77,6 +80,35 @@ const MePage: React.FC<MePageProps> = ({
     }
   }, [sigDraft, onSaveProfile]);
 
+  /** 修改展示名：身份（UUID）不变，只是换一个聊天里显示的名字 */
+  const handleSaveName = useCallback(async () => {
+    const next = nameDraft.trim();
+    if (!next) {
+      showError('昵称不能为空');
+      return;
+    }
+    if (next.length > 20) {
+      showError('昵称不能超过 20 个字');
+      return;
+    }
+    if (next === (profile?.display_name || currentUser)) {
+      setEditingName(false);
+      return;
+    }
+    setSaving(true);
+    try {
+      const saved = await onSaveProfile({ display_name: next });
+      if (saved) {
+        setEditingName(false);
+        showSuccess('昵称已更新');
+      } else {
+        showError('保存失败');
+      }
+    } finally {
+      setSaving(false);
+    }
+  }, [nameDraft, profile?.display_name, currentUser, onSaveProfile]);
+
   return (
     <div className="flex flex-col h-full bg-background overflow-y-auto">
       {/* 资料卡 */}
@@ -111,7 +143,40 @@ const MePage: React.FC<MePageProps> = ({
 
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              <h2 className="text-xl font-semibold text-foreground truncate">{currentUser}</h2>
+              {editingName ? (
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <input
+                    value={nameDraft}
+                    onChange={(e) => setNameDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleSaveName();
+                      if (e.key === 'Escape') { setNameDraft(profile?.display_name || currentUser); setEditingName(false); }
+                    }}
+                    maxLength={20}
+                    autoFocus
+                    placeholder="你的昵称"
+                    className="min-w-0 w-full h-9 px-2 text-[15px] font-semibold rounded-lg border border-input bg-background text-foreground outline-none focus:border-primary"
+                  />
+                  <button
+                    onClick={handleSaveName}
+                    disabled={saving}
+                    className="p-1.5 rounded-lg bg-primary text-primary-foreground disabled:opacity-50 flex-shrink-0"
+                    aria-label="保存昵称"
+                  >
+                    {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => { setNameDraft(profile?.display_name || currentUser); setEditingName(true); }}
+                  className="min-w-0 text-left"
+                  aria-label="修改昵称"
+                >
+                  <h2 className="text-xl font-semibold text-foreground truncate hover:text-primary transition-colors">
+                    {profile?.display_name || currentUser}
+                  </h2>
+                </button>
+              )}
             </div>
 
             {editingSig ? (
@@ -172,9 +237,6 @@ const MePage: React.FC<MePageProps> = ({
         </button>
       </div>
 
-      <div className="mt-auto py-6 text-center text-[11px] text-muted-foreground">
-        昵称即账号 · 换昵称等于换账号
-      </div>
     </div>
   );
 };

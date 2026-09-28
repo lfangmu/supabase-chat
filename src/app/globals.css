@@ -2,10 +2,10 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ─── Design System: Cool Modern (靛蓝冷调) ─── */
+/* ─── Design System: WeChat (微信风) ─── */
 /* Color tokens use HSL for universal browser support */
-/* Base hue: 243 (indigo) */
-/* Accent hue: 199 (sky) */
+/* Brand green: 149 (≈#07C160) */
+/* Surfaces: neutral gray, white cards */
 
 @layer utilities {
   .content-auto {
@@ -53,74 +53,122 @@
 /* ─── Design Tokens ─── */
 @layer base {
   :root {
-    /* Surface layers — cool slate */
-    --background:       210 40% 98%;    /* #F8FAFC slate-50 page bg */
-    --foreground:       222 47% 11%;    /* #0F172A slate-900 text */
+    /* Surface layers — WeChat neutral gray */
+    --background:       0 0% 93%;       /* #EDEDED chat/page bg */
+    --foreground:       0 0% 10%;       /* #191919 near-black text */
     --card:             0 0% 100%;      /* #FFFFFF card */
-    --card-foreground:  222 47% 11%;
+    --card-foreground:  0 0% 10%;
     --popover:          0 0% 100%;
-    --popover-foreground: 222 47% 11%;
+    --popover-foreground: 0 0% 10%;
 
-    /* Primary — indigo */
-    --primary:          243 75% 59%;    /* #4F46E5 indigo-600 */
-    --primary-foreground: 0 0% 100%;    /* white on primary */
+    /* Primary — WeChat green */
+    --primary:          149 93% 39%;    /* #07C160 */
+    --primary-foreground: 0 0% 100%;    /* white on green */
 
-    /* Secondary — muted slate */
-    --secondary:        210 40% 96%;    /* #F1F5F9 slate-100 */
-    --secondary-foreground: 215 25% 27%; /* #334155 slate-700 */
+    /* Secondary — light gray */
+    --secondary:        0 0% 96%;       /* #F5F5F5 */
+    --secondary-foreground: 0 0% 20%;
 
-    /* Muted — softer slate */
-    --muted:            210 40% 96%;    /* #F1F5F9 */
-    --muted-foreground: 215 16% 47%;    /* #64748B slate-500 */
+    /* Muted — softer gray */
+    --muted:            0 0% 96%;
+    --muted-foreground: 0 0% 45%;       /* #737373 */
 
-    /* Accent — sky tint for highlights */
-    --accent:           204 94% 94%;    /* #E0F2FE sky-100 */
-    --accent-foreground: 200 80% 24%;   /* #0C4A6E sky-900 */
+    /* Accent — faint green tint for highlights */
+    --accent:           149 50% 95%;    /* #E7F7EE */
+    --accent-foreground: 149 70% 28%;   /* #136C3E */
 
     /* Semantic */
     --destructive:       0 72% 51%;     /* #DC2626 red-600 */
     --destructive-foreground: 0 0% 100%;
 
-    /* Borders & inputs — cool slate */
-    --border:  214 32% 91%;             /* #E2E8F0 slate-200 */
-    --input:   214 32% 91%;
-    --ring:    243 75% 59%;             /* indigo focus ring */
+    /* Borders & inputs — neutral gray */
+    --border:  0 0% 88%;                /* #E0E0E0 */
+    --input:   0 0% 88%;
+    --ring:    149 93% 39%;             /* WeChat green focus ring */
 
     /* Shape */
-    --radius: 0.625rem;                /* slightly larger, softer */
+    --radius: 0.5rem;                   /* compact, WeChat-ish */
   }
 
   .dark {
-    /* Surface layers — deep slate */
-    --background:       222 47% 7%;     /* #0B1120 deep slate-black */
-    --foreground:       210 40% 96%;    /* #F1F5F9 slate-100 */
-    --card:             222 47% 11%;    /* #0F172A slate-900 */
-    --card-foreground:  210 40% 96%;
-    --popover:          222 47% 11%;
-    --popover-foreground: 210 40% 96%;
+    /* Surface layers — WeChat dark */
+    --background:       0 0% 7%;        /* #121212 */
+    --foreground:       0 0% 92%;       /* #EAEAEA */
+    --card:             0 0% 12%;       /* #1F1F1F */
+    --card-foreground:  0 0% 92%;
+    --popover:          0 0% 12%;
+    --popover-foreground: 0 0% 92%;
 
-    /* Primary — brighter indigo on dark */
-    --primary:          239 84% 67%;    /* #6366F1 indigo-500 */
+    /* Primary — WeChat green (slightly brighter on dark) */
+    --primary:          149 93% 42%;    /* #08C766 */
     --primary-foreground: 0 0% 100%;
 
     /* Secondary */
-    --secondary:        217 33% 17%;    /* #1E293B slate-800 */
-    --secondary-foreground: 210 40% 92%;
+    --secondary:        0 0% 16%;       /* #292929 */
+    --secondary-foreground: 0 0% 88%;
 
     /* Muted */
-    --muted:            217 33% 17%;
-    --muted-foreground: 215 20% 65%;    /* #94A3B8 slate-400 */
+    --muted:            0 0% 16%;
+    --muted-foreground: 0 0% 60%;       /* #999999 */
 
     /* Accent */
-    --accent:           204 70% 20%;    /* deep sky tint */
-    --accent-foreground: 199 95% 65%;   /* #38BDF8 sky-400 */
+    --accent:           149 40% 18%;
+    --accent-foreground: 149 80% 60%;
 
     /* Semantic */
     --destructive:       0 62% 45%;
     --destructive-foreground: 0 0% 100%;
 
     /* Borders */
-    --border:  217 33% 20%;             /* #1E293B slate-800 */
+    --border:  0 0% 18%;                /* #2E2E2E */
+    --input:   0 0% 18%;
+    --ring:    149 93% 42%;
+  }
+
+  /* ─── 可选主题：经典「靛蓝冷调」 ─── */
+  /* 默认（<html> 无此类）为微信风；加 .theme-classic 即整站切到经典主题。
+     由「管理页」一键切换，选择存于 localStorage，见 hooks/useBrandTheme.ts。
+     注意：必须排在 `.dark` 之后，靠源顺序在同优先级下覆盖 `:root`。 */
+  .theme-classic {
+    --background:       210 40% 98%;    /* #F8FAFC slate-50 */
+    --foreground:       222 47% 11%;    /* #0F172A slate-900 */
+    --card:             0 0% 100%;
+    --card-foreground:  222 47% 11%;
+    --popover:          0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary:          243 75% 59%;    /* #4F46E5 indigo-600 */
+    --primary-foreground: 0 0% 100%;
+    --secondary:        210 40% 96%;
+    --secondary-foreground: 215 25% 27%;
+    --muted:            210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+    --accent:           204 94% 94%;
+    --accent-foreground: 200 80% 24%;
+    --destructive:       0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border:  214 32% 91%;
+    --input:   214 32% 91%;
+    --ring:    243 75% 59%;
+  }
+
+  .theme-classic.dark {
+    --background:       222 47% 7%;
+    --foreground:       210 40% 96%;
+    --card:             222 47% 11%;
+    --card-foreground:  210 40% 96%;
+    --popover:          222 47% 11%;
+    --popover-foreground: 210 40% 96%;
+    --primary:          239 84% 67%;    /* #6366F1 indigo-500 */
+    --primary-foreground: 0 0% 100%;
+    --secondary:        217 33% 17%;
+    --secondary-foreground: 210 40% 92%;
+    --muted:            217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+    --accent:           204 70% 20%;
+    --accent-foreground: 199 95% 65%;
+    --destructive:       0 62% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --border:  217 33% 20%;
     --input:   217 33% 20%;
     --ring:    239 84% 67%;
   }
@@ -146,9 +194,9 @@
     @apply min-h-screen text-foreground;
     background: linear-gradient(
       135deg,
-      hsl(210, 40%, 98%) 0%,
-      hsl(214, 40%, 96%) 50%,
-      hsl(220, 38%, 97%) 100%
+      hsl(0, 0%, 93%) 0%,
+      hsl(0, 0%, 95%) 50%,
+      hsl(0, 0%, 92%) 100%
     );
     background-attachment: fixed;
     overscroll-behavior: none;
@@ -157,6 +205,26 @@
 
   .dark body,
   body.dark {
+    background: linear-gradient(
+      135deg,
+      hsl(0, 0%, 7%) 0%,
+      hsl(0, 0%, 9%) 50%,
+      hsl(0, 0%, 8%) 100%
+    );
+    background-attachment: fixed;
+  }
+
+  /* 经典主题：页面背景回到改版前的 slate 渐变 */
+  .theme-classic body {
+    background: linear-gradient(
+      135deg,
+      hsl(210, 40%, 98%) 0%,
+      hsl(214, 40%, 96%) 50%,
+      hsl(220, 38%, 97%) 100%
+    );
+    background-attachment: fixed;
+  }
+  .theme-classic.dark body {
     background: linear-gradient(
       135deg,
       hsl(222, 47%, 7%) 0%,
@@ -192,31 +260,45 @@
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: hsl(215, 20%, 80%);
+  background: hsl(0, 0%, 78%);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: hsl(215, 20%, 70%);
+  background: hsl(0, 0%, 68%);
 }
 .dark ::-webkit-scrollbar-thumb {
-  background: hsl(217, 33%, 28%);
+  background: hsl(0, 0%, 28%);
 }
 .dark ::-webkit-scrollbar-thumb:hover {
-  background: hsl(217, 33%, 35%);
+  background: hsl(0, 0%, 35%);
 }
 
 /* ─── Selection ─── */
 ::selection {
-  background: hsl(243, 75%, 59%, 0.18);
+  background: hsl(149, 93%, 39%, 0.18);
   color: inherit;
 }
 .dark ::selection {
-  background: hsl(239, 84%, 67%, 0.25);
+  background: hsl(149, 93%, 42%, 0.25);
 }
 
 /* ─── Focus ring ─── */
 :focus-visible {
-  outline: 2px solid hsl(243, 75%, 59%);
+  outline: 2px solid hsl(149, 93%, 39%);
   outline-offset: 2px;
   border-radius: 3px;
+}
+
+/* ─── 经典主题：选中色 / 聚焦环回到靛蓝 ─── */
+.theme-classic ::selection {
+  background: hsl(243, 75%, 59%, 0.18);
+}
+.theme-classic.dark ::selection {
+  background: hsl(239, 84%, 67%, 0.25);
+}
+.theme-classic :focus-visible {
+  outline-color: hsl(243, 75%, 59%);
+}
+.theme-classic.dark :focus-visible {
+  outline-color: hsl(239, 84%, 67%);
 }

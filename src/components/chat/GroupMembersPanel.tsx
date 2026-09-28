@@ -9,7 +9,8 @@ import { showError, showSuccess } from '@/utils/errorHandler';
 interface GroupMembersPanelProps {
   roomId: string;
   roomName: string;
-  currentUser: string;
+  /** 当前登录者的 Supabase Auth UUID（身份键；展示名一律用 RoomMember.display_name） */
+  currentUserId: string;
   members: RoomMember[];
   loading: boolean;
   onlineNicknames: string[];
@@ -24,7 +25,7 @@ const roleLabel: Record<string, string> = { owner: '群主', admin: '管理员',
 
 const GroupMembersPanel: React.FC<GroupMembersPanelProps> = ({
   roomName,
-  currentUser,
+  currentUserId,
   members,
   loading,
   onlineNicknames,
@@ -36,14 +37,14 @@ const GroupMembersPanel: React.FC<GroupMembersPanelProps> = ({
 }) => {
   const [busy, setBusy] = useState<string | null>(null);
   const onlineSet = new Set(onlineNicknames);
-  const myRole = members.find((m) => m.nickname === currentUser)?.role ?? 'member';
+  const myRole = members.find((m) => m.id === currentUserId)?.role ?? 'member';
   const isOwner = myRole === 'owner';
 
-  const handleRemove = useCallback(async (target: string) => {
-    if (!confirm(`确定将「${target}」移出群聊？`)) return;
-    setBusy(target);
+  const handleRemove = useCallback(async (targetId: string, targetName: string) => {
+    if (!confirm(`确定将「${targetName}」移出群聊？`)) return;
+    setBusy(targetId);
     try {
-      const r = await onRemove(target);
+      const r = await onRemove(targetId);
       if (r.success) showSuccess('已移出群聊');
       else showError(r.message || '操作失败');
     } finally {
@@ -51,13 +52,13 @@ const GroupMembersPanel: React.FC<GroupMembersPanelProps> = ({
     }
   }, [onRemove]);
 
-  const handleTransfer = useCallback(async (target: string) => {
-    if (!confirm(`确定把群主转让给「${target}」？转让后你将变为普通成员。`)) return;
-    setBusy(target);
+  const handleTransfer = useCallback(async (targetId: string, targetName: string) => {
+    if (!confirm(`确定把群主转让给「${targetName}」？转让后你将变为普通成员。`)) return;
+    setBusy(targetId);
     try {
-      const r = await onSetRole(target, 'owner');
+      const r = await onSetRole(targetId, 'owner');
       if (r.success) {
-        await onSetRole(currentUser, 'member');
+        await onSetRole(currentUserId, 'member');
         showSuccess('群主已转让');
       } else {
         showError(r.message || '转让失败');
@@ -65,13 +66,13 @@ const GroupMembersPanel: React.FC<GroupMembersPanelProps> = ({
     } finally {
       setBusy(null);
     }
-  }, [onSetRole, currentUser]);
+  }, [onSetRole, currentUserId]);
 
   const handleLeave = useCallback(async () => {
     if (!confirm('确定退出该群聊？')) return;
-    setBusy(currentUser);
+    setBusy(currentUserId);
     try {
-      const r = await onRemove(currentUser);
+      const r = await onRemove(currentUserId);
       if (r.success) {
         showSuccess('已退出群聊');
         onLeft();
@@ -81,7 +82,7 @@ const GroupMembersPanel: React.FC<GroupMembersPanelProps> = ({
     } finally {
       setBusy(null);
     }
-  }, [onRemove, currentUser, onLeft]);
+  }, [onRemove, currentUserId, onLeft]);
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center" onClick={onClose}>
@@ -107,37 +108,37 @@ const GroupMembersPanel: React.FC<GroupMembersPanelProps> = ({
           ) : (
             <div className="grid grid-cols-4 sm:grid-cols-5 gap-4">
               {members.map((m) => (
-                <div key={m.nickname} className="flex flex-col items-center gap-1 relative group">
+                <div key={m.id} className="flex flex-col items-center gap-1 relative group">
                   <div className="relative">
-                    <Avatar name={m.nickname} avatar={m.avatar} size={48} />
-                    {onlineSet.has(m.nickname) && (
+                    <Avatar name={m.display_name} avatar={m.avatar} size={48} />
+                    {onlineSet.has(m.display_name) && (
                       <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-green-500 border-2 border-card" />
                     )}
                     {m.role === 'owner' && (
                       <Crown className="absolute -top-2 -left-1 w-3.5 h-3.5 text-amber-500 fill-amber-500" />
                     )}
                   </div>
-                  <span className="text-[11px] text-foreground truncate max-w-full">{m.nickname}</span>
+                  <span className="text-[11px] text-foreground truncate max-w-full">{m.display_name}</span>
                   {roleLabel[m.role] && (
                     <span className="text-[9px] text-muted-foreground -mt-1">{roleLabel[m.role]}</span>
                   )}
 
                   {/* 群主操作 */}
-                  {isOwner && m.nickname !== currentUser && (
+                  {isOwner && m.id !== currentUserId && (
                     <div className="absolute -top-1 -right-1 hidden group-hover:flex flex-col gap-1">
                       <button
-                        onClick={() => handleRemove(m.nickname)}
-                        disabled={busy === m.nickname}
+                        onClick={() => handleRemove(m.id, m.display_name)}
+                        disabled={busy === m.id}
                         className="w-5 h-5 rounded-full bg-destructive text-white flex items-center justify-center"
-                        aria-label={`移出 ${m.nickname}`}
+                        aria-label={`移出 ${m.display_name}`}
                       >
-                        {busy === m.nickname ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                        {busy === m.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
                       </button>
                       <button
-                        onClick={() => handleTransfer(m.nickname)}
-                        disabled={busy === m.nickname}
+                        onClick={() => handleTransfer(m.id, m.display_name)}
+                        disabled={busy === m.id}
                         className="w-5 h-5 rounded-full bg-amber-500 text-white flex items-center justify-center"
-                        aria-label={`转让群主给 ${m.nickname}`}
+                        aria-label={`转让群主给 ${m.display_name}`}
                       >
                         <Crown className="w-3 h-3" />
                       </button>
@@ -164,10 +165,10 @@ const GroupMembersPanel: React.FC<GroupMembersPanelProps> = ({
         <div className="px-4 py-3 border-t border-border flex-shrink-0">
           <button
             onClick={handleLeave}
-            disabled={busy === currentUser}
+            disabled={busy === currentUserId}
             className="w-full h-10 rounded-xl text-destructive hover:bg-destructive/10 font-medium flex items-center justify-center gap-2 transition-colors"
           >
-            {busy === currentUser ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogOut className="w-4 h-4" />}
+            {busy === currentUserId ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogOut className="w-4 h-4" />}
             退出群聊
           </button>
         </div>

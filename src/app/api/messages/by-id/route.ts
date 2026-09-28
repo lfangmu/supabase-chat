@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
-import { getSessionUser } from '@/lib/auth';
+import { getAuthUser } from '@/lib/auth-user';
 import { isRoomParticipant } from '@/lib/rooms';
 
 export const runtime = 'edge';
@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: false, message: '无效的消息 id' }, { status: 400 });
     }
 
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }

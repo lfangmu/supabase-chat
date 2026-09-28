@@ -19,6 +19,9 @@ export const WITHDRAW_WINDOW_MS = 2 * 60 * 1000;
 interface MessageItemProps {
   message: Message;
   user: string;
+  /** 当前用户 UUID。自消息判定优先用它：展示名会被改名改掉，而历史消息里固化的
+   *  是「改名前的旧名」，只比展示名会让改名后自己以前发的消息跑到对方那一侧。 */
+  currentUserId?: string;
   onWithdraw: (id: string) => void;
   onRetry: (id: string) => void;
   onQuote?: (message: Message) => void;
@@ -40,6 +43,7 @@ interface MessageItemProps {
 const MessageItem: React.FC<MessageItemProps> = React.memo(({
   message,
   user,
+  currentUserId,
   onWithdraw,
   onRetry,
   onQuote,
@@ -52,7 +56,8 @@ const MessageItem: React.FC<MessageItemProps> = React.memo(({
   onToggleReaction,
   highlight = false,
 }) => {
-  const isSelf = message.user === user;
+  // 身份判定以 UUID 为准（展示名可被改，历史消息里存的是旧名）；缺 userId 的老数据才退回比展示名
+  const isSelf = currentUserId && message.userId ? message.userId === currentUserId : message.user === user;
   // 微信式：私聊不重复展示对方昵称与每条时间（群聊保留昵称）
   const showName = !isDM;
   const isFailed = message.sendStatus === 'failed';
@@ -241,6 +246,11 @@ const MessageItem: React.FC<MessageItemProps> = React.memo(({
             <span className="text-[10px] text-muted-foreground">
               {formatClock(new Date(message.timestamp))}
             </span>
+            {message.forwardedFrom && (
+              <span className="text-[10px] text-primary/70 border border-primary/30 rounded px-1 leading-tight">
+                转发
+              </span>
+            )}
           </div>
           )}
 
@@ -262,21 +272,23 @@ const MessageItem: React.FC<MessageItemProps> = React.memo(({
                 rows={Math.min(editContent.split('\n').length, 6)}
                 style={{ minHeight: '40px' }}
               />
-              <div className="flex items-center gap-2 justify-end">
-                <span className="text-[10px] text-muted-foreground mr-auto">Esc 取消 · Enter 保存</span>
-                <button
-                  onClick={handleCancelEdit}
-                  className="px-2.5 py-1 text-xs rounded-lg bg-secondary text-foreground hover:opacity-80"
-                >
-                  取消
-                </button>
-                <button
-                  onClick={handleSaveEdit}
-                  disabled={!editContent.trim() || editContent.trim() === message.content}
-                  className="px-2.5 py-1 text-xs rounded-lg bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  保存
-                </button>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-muted-foreground whitespace-nowrap">Esc 取消 · Enter 保存</span>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <button
+                    onClick={handleCancelEdit}
+                    className="px-2.5 py-1 text-xs rounded-lg bg-secondary text-foreground hover:opacity-80 whitespace-nowrap"
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={handleSaveEdit}
+                    disabled={!editContent.trim() || editContent.trim() === message.content}
+                    className="px-2.5 py-1 text-xs rounded-lg bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                  >
+                    保存
+                  </button>
+                </div>
               </div>
             </div>
           ) : (
@@ -340,7 +352,9 @@ const MessageItem: React.FC<MessageItemProps> = React.memo(({
                   else groups.set(r.emoji, [r]);
                 }
                 return Array.from(groups.entries()).map(([emoji, list]) => {
-                  const mine = list.some((r) => r.user === user);
+                  const mine = list.some((r) =>
+                    currentUserId && r.userId ? r.userId === currentUserId : r.user === user
+                  );
                   return (
                     <button
                       key={emoji}
@@ -429,18 +443,26 @@ const MessageItem: React.FC<MessageItemProps> = React.memo(({
               复制
             </button>
           )}
-          {message.type === 'image' && (
+          {message.type !== 'text' && (
             <button
               className="px-3 py-1 text-sm text-foreground hover:bg-muted rounded-full cursor-pointer transition-colors"
               onClick={async () => {
                 if (!resolvedContentUrl) return;
+                const isImage = message.type === 'image';
+                // 文件名：优先用原始文件名，否则兜底
+                const safeName =
+                  message.file_name && message.file_name.trim()
+                    ? message.file_name.trim()
+                    : isImage
+                    ? `image-${Date.now()}.jpg`
+                    : `file-${Date.now()}`;
                 try {
                   const response = await fetch(resolvedContentUrl);
                   const blob = await response.blob();
                   const blobUrl = URL.createObjectURL(blob);
                   const link = document.createElement('a');
                   link.href = blobUrl;
-                  link.download = `image-${Date.now()}.jpg`;
+                  link.download = safeName;
                   document.body.appendChild(link);
                   link.click();
                   setTimeout(() => {
@@ -448,9 +470,10 @@ const MessageItem: React.FC<MessageItemProps> = React.memo(({
                     URL.revokeObjectURL(blobUrl);
                   }, 100);
                 } catch {
+                  // 跨域或被拦截时退化为直接下载（依赖浏览器对 Content-Disposition 的处理）
                   const link = document.createElement('a');
                   link.href = resolvedContentUrl;
-                  link.download = `image-${Date.now()}.jpg`;
+                  link.download = safeName;
                   document.body.appendChild(link);
                   link.click();
                   document.body.removeChild(link);
@@ -459,7 +482,7 @@ const MessageItem: React.FC<MessageItemProps> = React.memo(({
               }}
               role="menuitem"
             >
-              保存图片
+              {message.type === 'image' ? '保存图片' : '保存文件'}
             </button>
           )}
           {onForward && (

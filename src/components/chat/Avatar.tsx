@@ -26,7 +26,7 @@ interface AvatarProps {
 
 /** 统一头像组件：有头像图显示图，否则显示昵称首字母色块（微信绿/中性风格） */
 const Avatar: React.FC<AvatarProps> = ({ name, avatar, size = 40, className = '', rounded = 'lg' }) => {
-  const radius = rounded === 'full' ? '9999px' : rounded === 'xl' ? '14px' : '12px';
+  const radius = rounded === 'full' ? '9999px' : rounded === 'xl' ? '10px' : '6px';
   const initial = (name || '?').trim().charAt(0).toUpperCase() || '?';
   // 头像可能是 Supabase Storage 路径，需要换签名 URL；完整 http(s) 链接原样返回
   const resolved = useSignedUrl(avatar || '');

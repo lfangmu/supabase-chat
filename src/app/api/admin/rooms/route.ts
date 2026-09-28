@@ -1,6 +1,6 @@
 ﻿import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
-import { extractSession } from '@/lib/auth';
+import { getAuthUser } from '@/lib/auth-user';
 import { logAdminAction, getClientIpFromRequest } from '@/lib/audit';
 
 export const runtime = 'edge';
@@ -9,25 +9,13 @@ export const runtime = 'edge';
 /**
  * GET /api/admin/rooms — 管理后台：返回全部（非 DM）房间及其最新消息摘要。
  *
- * 鉴权：仅认独立的 admin_session cookie（isAdmin:true），与普通聊天会话隔离。
- * 只读，不做任何成员过滤。middleware 已保护 /api/admin/*，这里再兜底校验一次。
+ * 鉴权：middleware 已确保调用者为 users.role='admin'。这里再解析 actor 兜底校验一次。
+ * 只读，不做任何成员过滤。
  */
 export async function GET(request: NextRequest) {
   try {
-    const jwtSecret = process.env.CHAT_JWT_SECRET;
-    if (!jwtSecret) {
-      return NextResponse.json(
-        { success: false, message: '服务器配置错误' },
-        { status: 500 }
-      );
-    }
-
-    const session = await extractSession(
-      request.headers.get('cookie'),
-      jwtSecret,
-      'admin_session'
-    );
-    if (!session.valid || session.payload?.isAdmin !== true) {
+    const actor = await getAuthUser(request);
+    if (!actor) {
       return NextResponse.json(
         { success: false, message: '未认证的管理员会话' },
         { status: 401 }
@@ -92,23 +80,13 @@ export async function GET(request: NextRequest) {
 /**
  * DELETE /api/admin/rooms — 管理后台：删除指定群聊及其全部消息。
  *
- * 鉴权：仅认独立的 admin_session cookie（isAdmin:true），与普通聊天会话隔离。
- * middleware 已保护 /api/admin/*，这里再兜底校验一次。
+ * 鉴权：middleware 已确保调用者为 admin。这里再解析 actor 兜底校验一次。
  * 数据安全：先用 service_role 删除该房间所有消息，再删房间本身；禁止删除系统保留的默认聊天室。
  */
 export async function DELETE(request: NextRequest) {
   try {
-    const jwtSecret = process.env.CHAT_JWT_SECRET;
-    if (!jwtSecret) {
-      return NextResponse.json({ success: false, message: '服务器配置错误' }, { status: 500 });
-    }
-
-    const session = await extractSession(
-      request.headers.get('cookie'),
-      jwtSecret,
-      'admin_session'
-    );
-    if (!session.valid || session.payload?.isAdmin !== true) {
+    const actor = await getAuthUser(request);
+    if (!actor) {
       return NextResponse.json({ success: false, message: '未认证的管理员会话' }, { status: 401 });
     }
 

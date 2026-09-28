@@ -21,3 +21,9 @@
 /*.woff, /*.woff2, /*.ttf, /*.otf
   Cache-Control: public, max-age=2592000, must-revalidate
   Access-Control-Allow-Origin: *
+
+# Service Worker 脚本不缓存，确保新版本（实时/鉴权逻辑）立即生效
+/sw.js
+  Cache-Control: no-cache, no-store, must-revalidate
+/register-sw.js
+  Cache-Control: no-cache, no-store, must-revalidate

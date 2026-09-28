@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
-import { getSessionUser } from '@/lib/auth';
+import { getAuthUser } from '@/lib/auth-user';
 import { isRoomParticipant } from '@/lib/rooms';
 
 export const runtime = 'edge';
@@ -8,13 +8,13 @@ export const runtime = 'edge';
 
 interface MemberRow {
   room_id: string;
-  user: string;
+  user_id: string;
   role: 'owner' | 'admin' | 'member';
   joined_at: string;
 }
 
 /**
- * GET /api/rooms/members?roomId=X — 群成员列表（含头像/昵称/角色）
+ * GET /api/rooms/members?roomId=X — 群成员列表（含头像/展示名/角色）
  */
 export async function GET(request: NextRequest) {
   try {
@@ -23,7 +23,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: false, message: '缺少房间 ID' }, { status: 400 });
     }
     // 仅群成员可查看成员列表（防枚举任意群的成员关系）
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }
@@ -36,24 +36,25 @@ export async function GET(request: NextRequest) {
     }
     const { data: members, error } = await supabase
       .from('room_members')
-      .select('room_id, user, role, joined_at')
+      .select('room_id, user_id, role, joined_at')
       .eq('room_id', roomId)
       .order('joined_at', { ascending: true });
     if (error) {
       return NextResponse.json({ success: false, message: '获取成员失败' }, { status: 500 });
     }
-    const nicks = (members || []).map((m: MemberRow) => m.user);
+    const uuids = (members || []).map((m: MemberRow) => m.user_id);
     const { data: profiles } = await supabase
       .from('users')
-      .select('nickname, avatar, signature')
-      .in('nickname', nicks);
-    const pm = new Map((profiles || []).map((p: { nickname: string; avatar: string | null; signature: string }) => [p.nickname, p]));
+      .select('id, display_name, avatar, signature')
+      .in('id', uuids);
+    const pm = new Map((profiles || []).map((p: { id: string; display_name: string | null; avatar: string | null; signature: string | null }) => [p.id, p]));
     const list = (members || []).map((m: MemberRow) => ({
-      nickname: m.user,
+      id: m.user_id,
+      display_name: pm.get(m.user_id)?.display_name ?? null,
       role: m.role,
       joined_at: m.joined_at,
-      avatar: pm.get(m.user)?.avatar ?? null,
-      signature: pm.get(m.user)?.signature ?? '',
+      avatar: pm.get(m.user_id)?.avatar ?? null,
+      signature: pm.get(m.user_id)?.signature ?? '',
     }));
     return NextResponse.json({ success: true, members: list });
   } catch {
@@ -69,7 +70,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     // 建群/拉人都以本人身份操作（防伪造群主、向非自己所在群拉人）
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }
@@ -102,12 +103,45 @@ export async function POST(request: NextRequest) {
 
       const rows = [owner, ...members.filter((m: string) => m !== owner)].map((u: string, i: number) => ({
         room_id: roomId,
-        user: u,
+        user_id: u,
         role: i === 0 ? 'owner' : 'member',
       }));
       const { error: me } = await supabase.from('room_members').insert(rows);
       if (me) return NextResponse.json({ success: false, message: '写入成员失败' }, { status: 500 });
       return NextResponse.json({ success: true, roomId });
+    }
+
+    // 自助入群：{ roomId, join: true }
+    // 进入/加入一个公开群聊时调用，幂等写一条自己的成员行。
+    // 必须落库——实时消息走 Postgres Changes + RLS，RLS 的 is_room_participant()
+    // 只认 room_members 里的真实行，localStorage 里的「已加入」记录对 RLS 无效。
+    if (body.roomId && body.join === true) {
+      const roomId = String(body.roomId).trim();
+      if (!roomId) {
+        return NextResponse.json({ success: false, message: '缺少房间 ID' }, { status: 400 });
+      }
+      const { data: room } = await supabase
+        .from('rooms')
+        .select('id, type')
+        .eq('id', roomId)
+        .maybeSingle();
+      if (!room) {
+        return NextResponse.json({ success: false, message: '房间不存在' }, { status: 404 });
+      }
+      if (room.type === 'dm') {
+        return NextResponse.json({ success: false, message: '私聊无需加入' }, { status: 400 });
+      }
+      // ignoreDuplicates：已在群里（含群主/管理员）时保持原角色，绝不被降级
+      const { error } = await supabase
+        .from('room_members')
+        .upsert(
+          { room_id: roomId, user_id: actor, role: 'member' },
+          { onConflict: 'room_id,user_id', ignoreDuplicates: true }
+        );
+      if (error) {
+        return NextResponse.json({ success: false, message: '加入失败' }, { status: 500 });
+      }
+      return NextResponse.json({ success: true });
     }
 
     // 拉人进已有群
@@ -118,14 +152,14 @@ export async function POST(request: NextRequest) {
       // 仅群成员可拉人（WeChat 行为：群员可邀请）
       const { data: me } = await supabase
         .from('room_members')
-        .select('user')
+        .select('user_id')
         .eq('room_id', roomId)
-        .eq('user', actor)
+        .eq('user_id', actor)
         .maybeSingle();
       if (!me) {
         return NextResponse.json({ success: false, message: '仅群成员可拉人' }, { status: 403 });
       }
-      const rows = add.map((u: string) => ({ room_id: roomId, user: u, role: 'member' }));
+      const rows = add.map((u: string) => ({ room_id: roomId, user_id: u, role: 'member' }));
       const { error } = await supabase.from('room_members').insert(rows).select();
       if (error) return NextResponse.json({ success: false, message: '添加失败' }, { status: 500 });
       return NextResponse.json({ success: true });
@@ -144,7 +178,7 @@ export async function POST(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   try {
     // 只能以本人身份管理成员（防伪造群主改他人角色）
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }
@@ -157,11 +191,11 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ success: false, message: '只能以本人身份管理成员' }, { status: 403 });
     }
     const supabase = getServiceClient();
-    const { data: me } = await supabase.from('room_members').select('role').eq('room_id', roomId).eq('user', user).maybeSingle();
+    const { data: me } = await supabase.from('room_members').select('role').eq('room_id', roomId).eq('user_id', user).maybeSingle();
     if (!me || me.role !== 'owner') {
       return NextResponse.json({ success: false, message: '仅群主可管理成员' }, { status: 403 });
     }
-    const { error } = await supabase.from('room_members').update({ role }).eq('room_id', roomId).eq('user', target);
+    const { error } = await supabase.from('room_members').update({ role }).eq('room_id', roomId).eq('user_id', target);
     if (error) return NextResponse.json({ success: false, message: '修改失败' }, { status: 500 });
     return NextResponse.json({ success: true });
   } catch {
@@ -178,7 +212,7 @@ export async function PUT(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   try {
     // 只能以本人身份退群/移除（防伪造他人退群或群主移除）
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }
@@ -194,7 +228,7 @@ export async function DELETE(request: NextRequest) {
 
     const selfLeave = user === target;
     if (!selfLeave) {
-      const { data: me } = await supabase.from('room_members').select('role').eq('room_id', roomId).eq('user', user).maybeSingle();
+      const { data: me } = await supabase.from('room_members').select('role').eq('room_id', roomId).eq('user_id', user).maybeSingle();
       if (!me || me.role !== 'owner') {
         return NextResponse.json({ success: false, message: '仅群主可移除成员' }, { status: 403 });
       }
@@ -202,17 +236,17 @@ export async function DELETE(request: NextRequest) {
 
     // 群主退群：转让
     if (selfLeave) {
-      const { data: me } = await supabase.from('room_members').select('role').eq('room_id', roomId).eq('user', user).maybeSingle();
+      const { data: me } = await supabase.from('room_members').select('role').eq('room_id', roomId).eq('user_id', user).maybeSingle();
       if (me?.role === 'owner') {
         const { data: others } = await supabase
           .from('room_members')
-          .select('user, role, joined_at')
+          .select('user_id, role, joined_at')
           .eq('room_id', roomId)
-          .neq('user', user)
+          .neq('user_id', user)
           .order('joined_at', { ascending: true })
           .limit(1);
         if (others && others.length) {
-          await supabase.from('room_members').update({ role: 'owner' }).eq('room_id', roomId).eq('user', others[0].user);
+          await supabase.from('room_members').update({ role: 'owner' }).eq('room_id', roomId).eq('user_id', others[0].user_id);
         } else {
           // 群空了 → 删群
           await supabase.from('rooms').delete().eq('id', roomId);
@@ -222,7 +256,7 @@ export async function DELETE(request: NextRequest) {
       }
     }
 
-    const { error } = await supabase.from('room_members').delete().eq('room_id', roomId).eq('user', target);
+    const { error } = await supabase.from('room_members').delete().eq('room_id', roomId).eq('user_id', target);
     if (error) return NextResponse.json({ success: false, message: '移除失败' }, { status: 500 });
     return NextResponse.json({ success: true });
   } catch {

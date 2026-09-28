@@ -1,6 +1,6 @@
 ﻿import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
-import { extractSession } from '@/lib/auth';
+import { getAuthUser } from '@/lib/auth-user';
 
 export const runtime = 'edge';
 
@@ -8,7 +8,7 @@ export const runtime = 'edge';
 /**
  * GET /api/admin/audit-logs — 管理后台：查看操作审计日志
  *
- * 鉴权：仅认 admin_session cookie（isAdmin:true）。
+ * 鉴权：middleware 已确保调用者为 users.role='admin'。这里再解析 actor 兜底校验一次。
  * 参数：
  *   - action: 按操作类型筛选（可选）
  *   - limit: 返回条数，默认 100，最大 500
@@ -16,20 +16,8 @@ export const runtime = 'edge';
  */
 export async function GET(request: NextRequest) {
   try {
-    const jwtSecret = process.env.CHAT_JWT_SECRET;
-    if (!jwtSecret) {
-      return NextResponse.json(
-        { success: false, message: '服务器配置错误' },
-        { status: 500 }
-      );
-    }
-
-    const session = await extractSession(
-      request.headers.get('cookie'),
-      jwtSecret,
-      'admin_session'
-    );
-    if (!session.valid || session.payload?.isAdmin !== true) {
+    const actor = await getAuthUser(request);
+    if (!actor) {
       return NextResponse.json(
         { success: false, message: '未认证的管理员会话' },
         { status: 401 }

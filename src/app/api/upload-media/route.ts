@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
 import { UPLOAD_CONFIG } from '@/config';
-import { getSessionUser } from '@/lib/auth';
+import { getAuthUser } from '@/lib/auth-user';
 
 export const runtime = 'edge';
 
@@ -28,7 +28,7 @@ function isFileMimeType(mime: string): boolean {
 export async function POST(request: NextRequest) {
   try {
     // 必须登录，且为房间成员（防匿名上传 / 向非所在房间上传）
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json(
         { success: false, message: '未登录' },
@@ -58,9 +58,9 @@ export async function POST(request: NextRequest) {
     const memberClient = getServiceClient();
     const { data: me } = await memberClient
       .from('room_members')
-      .select('user')
+      .select('user_id')
       .eq('room_id', roomId)
-      .eq('user', actor)
+      .eq('user_id', actor)
       .maybeSingle();
     if (!me) {
       return NextResponse.json(

@@ -63,21 +63,20 @@ describe('rate-limit', () => {
   });
 
   describe('getRateLimitConfig', () => {
-    it('should return correct config for auth login', () => {
-      const config = getRateLimitConfig('/api/auth/login');
-      expect(config.max).toBe(10);
+    it('should return correct config for rooms', () => {
+      const config = getRateLimitConfig('/api/rooms');
+      expect(config.max).toBe(20);
       expect(config.windowMs).toBe(60000);
     });
 
-    it('should return correct config for auth register', () => {
-      const config = getRateLimitConfig('/api/auth/register');
-      expect(config.max).toBe(10);
-      expect(config.windowMs).toBe(60000);
+    it('should return correct config for admin messages', () => {
+      const config = getRateLimitConfig('/api/admin/messages');
+      expect(config.max).toBe(20);
     });
 
-    it('should return correct config for admin verify', () => {
-      const config = getRateLimitConfig('/api/admin/verify');
-      expect(config.max).toBe(5);
+    it('should return correct config for admin audit logs', () => {
+      const config = getRateLimitConfig('/api/admin/audit-logs');
+      expect(config.max).toBe(10);
     });
 
     it('should return correct config for upload', () => {

@@ -49,6 +49,12 @@ export const MESSAGE_CONFIG = {
   MAX_CONTENT_LENGTH: 10000,
 };
 
+// 消息缓存版本：每次执行破坏性迁移（如 TRUNCATE public.messages / 换库 / 改 schema）
+// 后把这个数字 +1，前端在下次加载时会清掉旧的 localStorage 消息缓存，
+// 避免「服务端库已清空，但本地还显示 7月31日 这类旧消息」的割裂。
+// 当前因 00020_auth_uuid_identity 迁移 TRUNCATE 了 messages，故从 1 提到 2。
+export const MESSAGE_CACHE_VERSION = 2;
+
 // 认证配置
 export const AUTH_CONFIG = {
   SESSION_COOKIE: 'chat_session',
@@ -59,7 +65,7 @@ export const AUTH_CONFIG = {
 // 存储配置
 export const STORAGE_CONFIG_KEYS = {
   MESSAGES_PREFIX: 'chat_messages_v1_',
-  NICKNAME_KEY: 'chat_nickname',
+  // 旧版「昵称」存储键已随 Supabase Auth 迁移移除（身份改用 auth.uid()，展示名来自 public.users.display_name）
   THEME_KEY: 'chat_theme',
   // REQ-004: 草稿
   DRAFT_PREFIX: 'chat_draft_',
@@ -69,6 +75,10 @@ export const STORAGE_CONFIG_KEYS = {
   CHAT_SETTINGS_KEY: 'chat_settings',
   // 已删除消息
   DELETED_MESSAGES_KEY: 'chat_deleted_messages',
+  // 已「清空聊天记录」的房间：{ [roomId]: ISO 时间戳 }，早于该时间的消息在本机隐藏
+  CLEARED_ROOMS_KEY: 'chat_cleared_rooms',
+  // 消息缓存版本键：与 MESSAGE_CACHE_VERSION 对齐，不匹配时清空 MESSAGES_PREFIX* 缓存
+  MESSAGE_CACHE_VERSION_KEY: 'chat_messages_cache_version',
 };
 
 // 房间配置
@@ -84,13 +94,8 @@ export const DM_CONFIG = {
 
 // API 配置
 export const API_CONFIG = {
-  // 账号体系（注册 / 登录 / 登出 / 当前会话）
-  AUTH_REGISTER_ENDPOINT: '/api/auth/register',
-  AUTH_LOGIN_ENDPOINT: '/api/auth/login',
-  AUTH_LOGOUT_ENDPOINT: '/api/auth/logout',
+  // 当前会话资料（Supabase Auth 登录后取展示名 / 头像 / 角色）
   AUTH_ME_ENDPOINT: '/api/me',
-  // 账号自愈：当会话 JWT 仍有效但 users / room_members 行被清掉时，凭有效会话重建数据
-  AUTH_RECOVER_ENDPOINT: '/api/auth/recover',
   MESSAGES_ENDPOINT: '/api/messages',
   UPLOAD_MEDIA_ENDPOINT: '/api/upload-media',
   UPLOAD_PROXY_ENDPOINT: '/api/upload-proxy',
@@ -103,8 +108,7 @@ export const API_CONFIG = {
   // 房间发现对账：返回当前用户「服务端记录的」全部房间 ID（只增不删地补进本地已加入列表）
   ROOMS_MINE_ENDPOINT: '/api/rooms/mine',
   MESSAGE_READ_ENDPOINT: '/api/messages/read',
-  // 管理后台（独立 admin_session 会话，管理员可读全部房间/消息并删群聊）
-  ADMIN_VERIFY_ENDPOINT: '/api/admin/verify',
+  // 管理后台（Supabase Auth 登录后由 middleware 按 users.role='admin' 放行）
   ADMIN_ROOMS_ENDPOINT: '/api/admin/rooms',
   ADMIN_MESSAGES_ENDPOINT: '/api/admin/messages',
   ADMIN_AUDIT_LOGS_ENDPOINT: '/api/admin/audit-logs',

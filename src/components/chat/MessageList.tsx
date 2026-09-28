@@ -41,6 +41,8 @@ interface MessageListProps {
   onLoadMessageById?: (id: string) => Promise<Message | null>;
   /** 当前房间 id（用于切换房间时重置未读/分隔线状态，避免串台） */
   roomId?: string;
+  /** 当前用户 UUID：自消息判定以它为准（展示名会被改名改掉） */
+  currentUserId?: string;
 }
 
 const NEAR_BOTTOM_THRESHOLD = 120;
@@ -70,6 +72,7 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
   highlightMessageId = null,
   onLoadMessageById,
   roomId = '',
+  currentUserId,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
@@ -203,7 +206,9 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
     }
 
     const lastMsg = lastItem.message;
-    const isSelf = lastMsg?.user === user;
+    const isSelf = currentUserId && lastMsg?.userId
+      ? lastMsg.userId === currentUserId
+      : lastMsg?.user === user;
 
     if (isNearBottomRef.current || isSelf) {
       virtualizer.scrollToIndex(len - 1, {
@@ -230,7 +235,7 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
     }
 
     prevLenRef.current = len;
-  }, [virtualItems, user, virtualizer, roomId]);
+  }, [virtualItems, user, currentUserId, virtualizer, roomId]);
 
   // Cache upload start times to avoid flickering timestamps on re-render
   const uploadStartTimesRef = useRef<Map<string, string>>(new Map());
@@ -360,6 +365,7 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
                     key={message.id}
                     message={message}
                     user={user}
+                    currentUserId={currentUserId}
                     onWithdraw={onWithdraw}
                     onRetry={onRetry}
                     onQuote={onQuote}
@@ -420,6 +426,7 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
                     <MessageItem
                       message={message}
                       user={user}
+                      currentUserId={currentUserId}
                       onWithdraw={onWithdraw}
                       onRetry={onRetry}
                       onQuote={onQuote}

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
-import { getSessionUser } from '@/lib/auth';
+import { getAuthUser } from '@/lib/auth-user';
 
 export const runtime = 'edge';
 
@@ -8,9 +8,9 @@ export const runtime = 'edge';
 /**
  * 规范化双向主键：user_a < user_b（字典序）
  *
- * user_a / user_b 只是为了让「A→B」和「B→A」落在同一行，顺序由昵称
+ * user_a / user_b 只是为了让「A→B」和「B→A」落在同一行，顺序由 UUID
  * 字典序决定，与谁发起申请无关。判断申请方向必须看 requested_by，
- * 拿 user_a/user_b 的位置当收发件人会在半数昵称组合下彻底反向。
+ * 拿 user_a/user_b 的位置当收发件人会在半数组合下彻底反向。
  */
 function normalize(a: string, b: string): [string, string] {
   return a <= b ? [a, b] : [b, a];
@@ -26,72 +26,77 @@ interface FriendRow {
   updated_at: string;
 }
 
+interface Profile {
+  id: string;
+  display_name: string | null;
+  avatar: string | null;
+  signature: string | null;
+}
+
 /**
- * GET /api/friends?user=A
- * 返回该用户的好友全景：
+ * GET /api/friends — 返回当前用户的好友全景：
  *  - friends:  已互为好友
- *  - incoming: 别人发来的待通过申请（pending 且 requested_by ≠ A）
- *  - outgoing: 我发出的待通过申请（pending 且 requested_by = A）
+ *  - incoming: 别人发来的待通过申请（pending 且 requested_by ≠ 当前用户）
+ *  - outgoing: 我发出的待通过申请（pending 且 requested_by = 当前用户）
  *  - blocked:  被我拉黑的用户
  */
 export async function GET(request: NextRequest) {
   try {
-    // 只能查看自己的好友关系（防枚举他人好友列表）
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    // 只能查看自己的好友关系（actor 是 Supabase Auth 的 UUID）
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
-    }
-    const user = request.nextUrl.searchParams.get('user')?.trim();
-    if (!user) {
-      return NextResponse.json({ success: false, message: '缺少用户' }, { status: 400 });
-    }
-    if (user !== actor) {
-      return NextResponse.json({ success: false, message: '只能查看自己的好友' }, { status: 403 });
     }
     const supabase = getServiceClient();
     const { data, error } = await supabase
       .from('friends')
       .select('*')
-      .or(`user_a.eq.${user},user_b.eq.${user}`);
+      .or(`user_a.eq.${actor},user_b.eq.${actor}`);
 
     if (error) {
       return NextResponse.json({ success: false, message: '获取好友失败' }, { status: 500 });
     }
 
     const friends: string[] = [];
-    const incoming: { nickname: string; created_at: string }[] = [];
-    const outgoing: { nickname: string; created_at: string }[] = [];
+    const incoming: { id: string; created_at: string }[] = [];
+    const outgoing: { id: string; created_at: string }[] = [];
     const blocked: string[] = [];
 
     for (const row of (data || []) as FriendRow[]) {
-      const other = row.user_a === user ? row.user_b : row.user_a;
+      const other = row.user_a === actor ? row.user_b : row.user_a;
       if (row.status === 'accepted') friends.push(other);
       else if (row.status === 'blocked') blocked.push(other);
       else if (row.status === 'pending') {
         // 方向看 requested_by：我发起的是 outgoing，否则是别人发给我的
-        if (row.requested_by === user) outgoing.push({ nickname: other, created_at: row.created_at });
-        else incoming.push({ nickname: other, created_at: row.created_at });
+        if (row.requested_by === actor) outgoing.push({ id: other, created_at: row.created_at });
+        else incoming.push({ id: other, created_at: row.created_at });
       }
     }
 
-    // 拉取好友资料（头像/签名）
-    let profiles: Record<string, { avatar: string | null; signature: string }> = {};
-    if (friends.length) {
+    // 批量拉取对方资料（展示名/头像/签名）
+    const others = Array.from(new Set([...friends, ...incoming.map((i) => i.id), ...outgoing.map((o) => o.id), ...blocked]));
+    let profiles: Profile[] = [];
+    if (others.length) {
       const { data: pd } = await supabase
         .from('users')
-        .select('nickname, avatar, signature')
-        .in('nickname', friends);
-      (pd || []).forEach((p: { nickname: string; avatar: string | null; signature: string }) => {
-        profiles[p.nickname] = { avatar: p.avatar, signature: p.signature };
-      });
+        .select('id, display_name, avatar, signature')
+        .in('id', others);
+      profiles = (pd || []) as Profile[];
     }
+    const pmap = new Map<string, Profile>(profiles.map((p) => [p.id, p]));
+    const toProfile = (id: string) => ({
+      id,
+      display_name: pmap.get(id)?.display_name ?? null,
+      avatar: pmap.get(id)?.avatar ?? null,
+      signature: pmap.get(id)?.signature ?? '',
+    });
 
     return NextResponse.json({
       success: true,
-      friends: friends.map((nick) => ({ nickname: nick, ...(profiles[nick] || { avatar: null, signature: '' }) })),
-      incoming,
-      outgoing,
-      blocked,
+      friends: friends.map(toProfile),
+      incoming: incoming.map((i) => ({ id: i.id, display_name: pmap.get(i.id)?.display_name ?? null, created_at: i.created_at })),
+      outgoing: outgoing.map((o) => ({ id: o.id, display_name: pmap.get(o.id)?.display_name ?? null, created_at: o.created_at })),
+      blocked: blocked.map(toProfile),
     });
   } catch {
     return NextResponse.json({ success: false, message: '服务器错误' }, { status: 500 });
@@ -105,15 +110,22 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     // 只能以本人身份发起申请（防伪造他人身份申请）
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }
     const body = await request.json();
     const user = (body.user as string)?.trim();
     const target = (body.target as string)?.trim();
-    if (!user || !target || user === target) {
-      return NextResponse.json({ success: false, message: '参数错误' }, { status: 400 });
+    // 细化 400 原因，方便客户端/用户定位（缺 user / 缺 target / 自己加自己）
+    if (!user) {
+      return NextResponse.json({ success: false, message: '参数错误：缺少身份(user)，请重新登录后重试' }, { status: 400 });
+    }
+    if (!target) {
+      return NextResponse.json({ success: false, message: '参数错误：缺少对方(target)，请刷新后重试' }, { status: 400 });
+    }
+    if (user === target) {
+      return NextResponse.json({ success: false, message: '参数错误：不能添加自己为好友' }, { status: 400 });
     }
     if (user !== actor) {
       return NextResponse.json({ success: false, message: '只能以本人身份申请' }, { status: 403 });
@@ -121,9 +133,9 @@ export async function POST(request: NextRequest) {
     const [a, b] = normalize(user, target);
     const supabase = getServiceClient();
 
-    // 确认双方都是已注册用户
-    const { data: users } = await supabase.from('users').select('nickname').in('nickname', [user, target]);
-    const have = new Set((users || []).map((u: { nickname: string }) => u.nickname));
+    // 确认双方都是已注册用户（按 UUID 主键）
+    const { data: users } = await supabase.from('users').select('id').in('id', [user, target]);
+    const have = new Set((users || []).map((u: { id: string }) => u.id));
     if (!have.has(user) || !have.has(target)) {
       return NextResponse.json({ success: false, message: '用户不存在' }, { status: 404 });
     }
@@ -149,7 +161,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, status: 'accepted', message: '已添加为好友' });
     }
 
-    // 新建 pending 申请
+    // 新建 pending 申请（requested_by 存发起方 UUID）
     const { error } = await supabase
       .from('friends')
       .upsert({ user_a: a, user_b: b, status: 'pending', requested_by: user, updated_at: new Date().toISOString() }, { onConflict: 'user_a,user_b' });
@@ -167,7 +179,7 @@ export async function POST(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   try {
     // 只能处理「发给自己的」申请，且以本人身份操作（防伪造他人通过申请）
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }
@@ -175,8 +187,11 @@ export async function PUT(request: NextRequest) {
     const user = (body.user as string)?.trim();
     const target = (body.target as string)?.trim();
     const action = body.action as 'accept' | 'reject';
-    if (!user || !target || (action !== 'accept' && action !== 'reject')) {
-      return NextResponse.json({ success: false, message: '参数错误' }, { status: 400 });
+    if (!user || !target) {
+      return NextResponse.json({ success: false, message: '参数错误：缺少身份或对方，请重新登录后重试' }, { status: 400 });
+    }
+    if (action !== 'accept' && action !== 'reject') {
+      return NextResponse.json({ success: false, message: '参数错误：操作类型无效' }, { status: 400 });
     }
     if (user !== actor) {
       return NextResponse.json({ success: false, message: '只能处理自己的申请' }, { status: 403 });
@@ -185,7 +200,6 @@ export async function PUT(request: NextRequest) {
     const supabase = getServiceClient();
 
     // 只有「收到申请的一方」(requested_by ≠ 当前用户) 能处理。
-    // 注意：user_a/user_b 按昵称字典序排序，与收发无关，不能拿 user_b 当收件人。
     const { data: row } = await supabase.from('friends').select('*').eq('user_a', a).eq('user_b', b).maybeSingle();
     if (!row) return NextResponse.json({ success: false, message: '无申请记录' }, { status: 404 });
     if (row.requested_by === user) {
@@ -220,7 +234,7 @@ export async function PUT(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   try {
     // 只能以本人身份删除/拉黑/取消拉黑（防伪造他人关系操作）
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }
@@ -228,8 +242,11 @@ export async function DELETE(request: NextRequest) {
     const user = (body.user as string)?.trim();
     const target = (body.target as string)?.trim();
     const action = body.action as 'remove' | 'block' | 'unblock';
-    if (!user || !target || !action) {
-      return NextResponse.json({ success: false, message: '参数错误' }, { status: 400 });
+    if (!user || !target) {
+      return NextResponse.json({ success: false, message: '参数错误：缺少身份或对方，请重新登录后重试' }, { status: 400 });
+    }
+    if (!action) {
+      return NextResponse.json({ success: false, message: '参数错误：操作类型无效' }, { status: 400 });
     }
     if (user !== actor) {
       return NextResponse.json({ success: false, message: '只能操作自己的关系' }, { status: 403 });

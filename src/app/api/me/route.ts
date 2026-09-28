@@ -1,40 +1,38 @@
 import { NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
-import { extractSession } from '@/lib/auth';
+import { getAuthUser } from '@/lib/auth-user';
 
 export const runtime = 'edge';
 
-
 /**
  * GET /api/me
- * 返回当前会话对应的用户资料，供前端探测登录态与获取身份。
- * 未携带有效会话 cookie 时由 middleware 拦截返回 401，无需在此再判。
+ * 返回当前 Supabase Auth 会话对应的用户资料（展示名 / 头像 / 角色等）。
+ * 未携带有效会话时由 middleware 拦截返回 401，这里只做资料读取与活跃时间刷新。
  */
 export async function GET(request: Request) {
   try {
-    const jwtSecret = (process.env.CHAT_JWT_SECRET ?? '').trim();
-    if (!jwtSecret) {
-      return NextResponse.json({ success: false, message: '服务器配置错误' }, { status: 500 });
-    }
-    const session = await extractSession(request.headers.get('cookie'), jwtSecret);
-    if (!session.valid || !session.payload?.nickname) {
+    const actor = await getAuthUser(request);
+    if (!actor) {
       return NextResponse.json({ success: false, message: '未认证' }, { status: 401 });
     }
-    const nickname = session.payload.nickname as string;
 
     const supabase = getServiceClient();
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('users')
-      .select('nickname, avatar, signature, created_at, last_active_at')
-      .eq('nickname', nickname)
+      .select('id, display_name, avatar, signature, role, created_at, last_active_at')
+      .eq('id', actor)
       .maybeSingle();
 
     // 刷新活跃时间（best-effort）
-    supabase.from('users').update({ last_active_at: new Date().toISOString() }).eq('nickname', nickname).then(
-      () => {},
-      () => {}
-    );
+    supabase
+      .from('users')
+      .update({ last_active_at: new Date().toISOString() })
+      .eq('id', actor)
+      .then(() => {}, () => {});
 
+    if (error) {
+      return NextResponse.json({ success: false, message: '资料读取失败' }, { status: 500 });
+    }
     if (!data) {
       return NextResponse.json({ success: false, message: '用户不存在' }, { status: 401 });
     }

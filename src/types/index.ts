@@ -17,7 +17,9 @@ export interface Room {
 /** 私聊房间（好友单聊） */
 export interface DMRoom extends Room {
   type: 'dm';
+  // 参与者为两个 Supabase Auth 的 UUID
   participants: [string, string];
+  // 对方展示名（前端按 dm:<uuidA>:<uuidB> 解析出对方 UUID 后查 display_name）
   otherUser: string;
 }
 
@@ -33,7 +35,10 @@ export type VirtualListItem =
 // 消息类型
 export interface Message {
   id: string;
+  // 发送者展示名（denorm 文本，写入时固化，避免渲染层全量改写）
   user: string;
+  // 发送者 Supabase Auth UUID（实时去重 / 自消息识别 / @提及用）
+  userId?: string;
   type: 'text' | 'image' | 'video' | 'voice' | 'file';
   content: string;
   timestamp: string;
@@ -55,13 +60,18 @@ export interface Message {
   file_name?: string | null;
   file_size?: number | null;
   file_mime?: string | null;
+  // 转发来源：被转发消息的原始 id（微信式「转发」标记；空表示非转发）
+  forwardedFrom?: string | null;
 }
 
 // REQ-001: 表情回应（emoji reaction）
 export interface Reaction {
   id: string;
   message_id: string;
+  // 回应者展示名（denorm 文本）
   user: string;
+  // 回应者 Supabase Auth UUID
+  userId?: string;
   emoji: string;
   created_at: string;
 }
@@ -119,10 +129,12 @@ export interface ChatState {
   hasMore: boolean;
 }
 
-// 认证状态
+// 认证状态（Supabase Auth 会话）
 export interface AuthState {
   isAuthenticated: boolean;
-  passwordVersion: string | null;
+  userId: string | null;
+  email: string | null;
+  isAnonymous: boolean;
 }
 
 // 全局搜索过滤条件
@@ -155,26 +167,31 @@ export type FriendStatus = 'pending' | 'accepted' | 'blocked';
 
 /** 好友全景（来自 /api/friends） */
 export interface FriendsData {
-  friends: { nickname: string; avatar: string | null; signature: string }[];
-  incoming: { nickname: string; created_at: string }[];
-  outgoing: { nickname: string; created_at: string }[];
+  friends: { id: string; display_name: string; avatar: string | null; signature: string }[];
+  incoming: { id: string; display_name: string; created_at: string }[];
+  outgoing: { id: string; display_name: string; created_at: string }[];
   blocked: string[];
 }
 
 /** 群成员（来自 /api/rooms/members?roomId=） */
 export interface RoomMember {
-  nickname: string;
+  // 成员 Supabase Auth UUID
+  id: string;
+  display_name: string;
   role: 'owner' | 'admin' | 'member';
   joined_at: string;
   avatar: string | null;
   signature: string;
 }
 
-/** 用户资料（来自 /api/users） */
+/** 用户资料（来自 /api/users 或 /api/me） */
 export interface UserProfile {
-  nickname: string;
+  // Supabase Auth UUID
+  id: string;
+  display_name: string;
   avatar: string | null;
   signature: string;
+  role?: string;
   created_at: string | null;
   last_active_at: string | null;
 }

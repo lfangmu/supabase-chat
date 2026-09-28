@@ -5,11 +5,15 @@ import { DMRoom } from '@/types';
 import { DM_CONFIG, API_CONFIG } from '@/config';
 
 interface UseDMParams {
-  currentUser: string;
+  /** 当前用户的 Supabase Auth UUID */
+  currentUserId: string;
   onSwitchRoom: (roomId: string) => void;
 }
 
-/** Generate a DM room ID from two usernames (bidirectionally unique) */
+/**
+ * 由两位参与者的 UUID 生成「双向唯一」的私聊房间 ID。
+ * 形如 dm:<uuidA>:<uuidB>（按字典序排序，保证两人视角一致）。
+ */
 export function generateDMRoomId(userA: string, userB: string): string {
   const a = userA.trim();
   const b = userB.trim();
@@ -17,29 +21,37 @@ export function generateDMRoomId(userA: string, userB: string): string {
   return `${DM_CONFIG.ID_PREFIX}${sorted.join(':')}`;
 }
 
-/** Extract the other user's name from a DM room ID given the current user */
-export function getDMOtherUser(roomId: string, currentUser: string): string | null {
+/**
+ * 从私聊房间 ID 中解析出「另一参与者」的 UUID。
+ * 仅在房间确实属于 currentUserId 时返回；否则返回 null（说明这不是我的私聊）。
+ */
+export function getDMOtherUser(roomId: string, currentUserId: string): string | null {
   if (!roomId.startsWith(DM_CONFIG.ID_PREFIX)) return null;
-  const rest = roomId.slice(DM_CONFIG.ID_PREFIX.length); // e.g. "alice:bob"
+  const rest = roomId.slice(DM_CONFIG.ID_PREFIX.length); // e.g. "<uuidA>:<uuidB>"
   const parts = rest.split(':');
   if (parts.length !== 2) return null;
   const [a, b] = parts;
-  const user = currentUser.trim();
+  const user = currentUserId.trim();
   if (user === a) return b;
   if (user === b) return a;
   return null;
 }
 
-export function useDM({ currentUser, onSwitchRoom }: UseDMParams) {
+/** 判断某私聊房间是否属于 currentUserId（无需解析展示名） */
+export function isUserInDMRoom(roomId: string, currentUserId: string): boolean {
+  return getDMOtherUser(roomId, currentUserId) !== null;
+}
+
+export function useDM({ currentUserId, onSwitchRoom }: UseDMParams) {
   const [dmRooms, setDmRooms] = useState<DMRoom[]>([]);
 
   /** Load DM rooms for the current user */
   const loadDMs = useCallback(async () => {
-    const user = currentUser.trim();
-    if (!user) return;
+    const uid = currentUserId.trim();
+    if (!uid) return;
 
     try {
-      const params = new URLSearchParams({ user });
+      const params = new URLSearchParams({ user: uid });
       const res = await fetch(`${API_CONFIG.DM_LIST_ENDPOINT}?${params}`);
       const data = await res.json();
       if (data.success && data.rooms) {
@@ -48,7 +60,7 @@ export function useDM({ currentUser, onSwitchRoom }: UseDMParams) {
     } catch {
       // Non-fatal
     }
-  }, [currentUser]);
+  }, [currentUserId]);
 
   // Load DMs when user changes
   useEffect(() => {
@@ -57,13 +69,17 @@ export function useDM({ currentUser, onSwitchRoom }: UseDMParams) {
 
   /** Start a DM with another user (creates room if not exists, then switches to it) */
   const startDM = useCallback(
-    async (otherUser: string): Promise<string | null> => {
-      const user = currentUser.trim();
-      const other = otherUser.trim();
+    async (otherUserId: string): Promise<string | null> => {
+      const me = currentUserId.trim();
+      const other = otherUserId.trim();
 
-      if (!user || !other || user === other) return null;
+      if (!me || !other || me === other) return null;
 
-      const dmRoomId = generateDMRoomId(user, other);
+      const dmRoomId = generateDMRoomId(me, other);
+
+      // 先切换到该私聊会话，消除「先闪一下默认聊天室再跳到私聊」的观感；
+      // 建房间 / 拉列表在后台异步进行（messages 无 rooms 外键，提前切换不影响发消息）。
+      onSwitchRoom(dmRoomId);
 
       try {
         // Create DM room (idempotent — upsert with ON CONFLICT DO NOTHING)
@@ -73,23 +89,20 @@ export function useDM({ currentUser, onSwitchRoom }: UseDMParams) {
           body: JSON.stringify({
             type: 'dm',
             id: dmRoomId,
-            created_by: user,
-            participants: [user, other],
+            created_by: me,
+            participants: [me, other],
           }),
         });
 
         // Refresh DM list
         await loadDMs();
 
-        // Switch to the DM room
-        onSwitchRoom(dmRoomId);
-
         return dmRoomId;
       } catch {
         return null;
       }
     },
-    [currentUser, loadDMs, onSwitchRoom]
+    [currentUserId, loadDMs, onSwitchRoom]
   );
 
   return {

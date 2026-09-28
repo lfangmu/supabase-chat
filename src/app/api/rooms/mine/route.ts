@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
-import { getSessionUser } from '@/lib/auth';
+import { getAuthUser } from '@/lib/auth-user';
 
 export const runtime = 'edge';
 
@@ -16,11 +16,11 @@ export const runtime = 'edge';
  * 绝不在本地删除房间，避免误伤用户主动隐藏/保留的会话。
  *
  * 注意：DM 私聊房间不写入 room_members，由 useDM 的 new-dm/实时消息链路独立发现，
- * 故此处只返回群聊类房间（即 room_members 中 user=当前用户 的全部 room_id）。
+ * 故此处只返回群聊类房间（即 room_members 中 user_id=当前用户 的全部 room_id）。
  */
 export async function GET(request: NextRequest) {
   try {
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }
@@ -29,7 +29,7 @@ export async function GET(request: NextRequest) {
     const { data, error } = await supabase
       .from('room_members')
       .select('room_id')
-      .eq('user', actor);
+      .eq('user_id', actor);
 
     if (error) {
       console.error('GET /api/rooms/mine error:', error);

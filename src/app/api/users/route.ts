@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
-import { getSessionUser } from '@/lib/auth';
+import { getAuthUser } from '@/lib/auth-user';
 
 export const runtime = 'edge';
 
 
 export interface UserProfile {
-  nickname: string;
+  id: string;
+  display_name: string | null;
   avatar: string | null;
   signature: string;
   created_at: string | null;
@@ -15,8 +16,8 @@ export interface UserProfile {
 
 /**
  * GET /api/users
- *  - ?q=xxx           搜索昵称（返回头像/签名），用于加好友/建群选人
- *  - ?user=xxx        获取单个用户资料
+ *  - ?q=xxx           搜索展示名（返回头像/签名），用于加好友/建群选人
+ *  - ?user=xxx         获取单个用户资料（xxx 为用户 UUID）
  *  - ?users=a,b,c     批量获取资料（用于消息列表头像映射，最多 100 个）
  */
 export async function GET(request: NextRequest) {
@@ -42,8 +43,8 @@ export async function GET(request: NextRequest) {
       }
       const { data, error } = await supabase
         .from('users')
-        .select('nickname, avatar, signature, created_at, last_active_at')
-        .in('nickname', list);
+        .select('id, display_name, avatar, signature, created_at, last_active_at')
+        .in('id', list);
       if (error) {
         return NextResponse.json({ success: false, message: '查询失败' }, { status: 500 });
       }
@@ -53,8 +54,8 @@ export async function GET(request: NextRequest) {
     if (user) {
       const { data, error } = await supabase
         .from('users')
-        .select('nickname, avatar, signature, created_at, last_active_at')
-        .eq('nickname', user)
+        .select('id, display_name, avatar, signature, created_at, last_active_at')
+        .eq('id', user)
         .maybeSingle();
       if (error) {
         return NextResponse.json({ success: false, message: '查询失败' }, { status: 500 });
@@ -71,8 +72,8 @@ export async function GET(request: NextRequest) {
 
     const { data, error } = await supabase
       .from('users')
-      .select('nickname, avatar, signature, created_at, last_active_at')
-      .ilike('nickname', `%${q}%`)
+      .select('id, display_name, avatar, signature, created_at, last_active_at')
+      .ilike('display_name', `%${q}%`)
       .order('last_active_at', { ascending: false, nullsFirst: false })
       .limit(20);
 
@@ -86,31 +87,31 @@ export async function GET(request: NextRequest) {
 }
 
 /**
- * POST /api/users — upsert 自己的用户资料（首次使用/修改头像签名时调用）
- * body: { nickname, avatar?, signature? }
+ * POST /api/users — upsert 自己的用户资料（首次使用/修改展示名/头像/签名时调用）
+ * body: { display_name?, nickname?, avatar?, signature? }
+ * 身份以会话为准（actor = auth.uid()），绝不信任请求体里的他人 id。
  */
 export async function POST(request: NextRequest) {
   try {
-    // 只能修改自己的资料（防 IDOR：昵称来自会话，不接受请求体里的他人昵称）
-    const actor = await getSessionUser(request.headers.get('cookie'));
+    // 只能修改自己的资料（防 IDOR：身份来自会话，不接受请求体里的他人身份）
+    const actor = await getAuthUser(request);
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }
     const body = await request.json();
-    const nickname = (body.nickname as string)?.trim();
-    if (!nickname) {
-      return NextResponse.json({ success: false, message: '缺少昵称' }, { status: 400 });
+    const raw = body.display_name ?? body.nickname;
+    const displayName = typeof raw === 'string' ? raw.trim() : '';
+    if (!displayName) {
+      return NextResponse.json({ success: false, message: '缺少展示名' }, { status: 400 });
     }
-    if (nickname !== actor) {
-      return NextResponse.json({ success: false, message: '只能修改自己的资料' }, { status: 403 });
-    }
-    if (nickname.length > 30) {
-      return NextResponse.json({ success: false, message: '昵称过长' }, { status: 400 });
+    if (displayName.length > 30) {
+      return NextResponse.json({ success: false, message: '展示名过长' }, { status: 400 });
     }
 
     const supabase = getServiceClient();
     const patch: Record<string, unknown> = {
-      nickname,
+      id: actor,
+      display_name: displayName,
       last_active_at: new Date().toISOString(),
     };
     if (typeof body.avatar === 'string') patch.avatar = body.avatar || null;
@@ -118,8 +119,8 @@ export async function POST(request: NextRequest) {
 
     const { data, error } = await supabase
       .from('users')
-      .upsert(patch, { onConflict: 'nickname' })
-      .select('nickname, avatar, signature, created_at, last_active_at')
+      .upsert(patch, { onConflict: 'id' })
+      .select('id, display_name, avatar, signature, created_at, last_active_at')
       .single();
 
     if (error) {
