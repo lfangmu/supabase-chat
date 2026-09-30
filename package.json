@@ -2,6 +2,9 @@
   "name": "supabase-chat",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -9,19 +12,21 @@
     "cf:preview": "wrangler pages dev .vercel/output/static --compatibility-flag=nodejs_compat",
     "cf:deploy": "wrangler pages deploy .vercel/output/static --project-name supabase-chat",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "next lint && eslint scripts --ext .mjs",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:integration": "node scripts/integration-test.mjs",
+    "db:migrate": "node scripts/db-migrate.mjs",
+    "user:reset-password": "node scripts/reset-password.mjs",
+    "user:restore": "node scripts/restore-user.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",
-    "@capacitor/cli": "^8.4.2",
     "@capacitor/core": "^8.4.2",
     "@supabase/ssr": "^0.5.2",
     "@supabase/supabase-js": "^2.97.0",
     "@tanstack/react-virtual": "^3.14.3",
-    "@testing-library/dom": "^10.4.1",
-    "@types/react-syntax-highlighter": "^15.5.13",
     "compressorjs": "^1.2.1",
     "hast-util-sanitize": "^5.0.2",
     "lucide-react": "^0.370.0",
@@ -37,13 +42,18 @@
     "tailwindcss-animate": "^1.0.7"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.4.2",
     "@cloudflare/next-on-pages": "^1.13.12",
     "@cloudflare/workers-types": "^4.20240208.0",
+    "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
+    "@types/react-syntax-highlighter": "^15.5.13",
+    "@typescript-eslint/eslint-plugin": "^8.70.1",
+    "@typescript-eslint/parser": "^8.70.1",
     "@vitejs/plugin-react": "^6.0.2",
     "eslint": "^8",
     "eslint-config-next": "14.2.35",
@@ -51,7 +61,6 @@
     "postcss": "^8",
     "tailwindcss": "^3.4.1",
     "typescript": "^5",
-    "vercel": "^55.0.0",
     "vitest": "^4.1.9",
     "wrangler": "^4.120.0"
   }

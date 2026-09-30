@@ -19,6 +19,69 @@ function trimProcessedIds(set: Set<string>) {
   }
 }
 
+/** 时间戳解析（升序比较用）；非法值按 0 处理，保证排序稳定不抛错。 */
+function tsOf(m: Message): number {
+  const t = Date.parse(m.timestamp);
+  return Number.isFinite(t) ? t : 0;
+}
+
+/**
+ * 线性合并两个**已按 timestamp 升序**的消息数组（O(n+m)）。
+ *
+ * P2-22 修复：此前每次合并都 `Array.from(map.values()).sort(...)` —— 全量 O(n log n)
+ * 排序，且紧接一次全量 `safeSetCache` 序列化；消息越多越慢（每条实时消息都触发一次）。
+ * 由于两个输入都已是升序，双指针归并即可，无需再排序。
+ *
+ * 调用方需自行保证 `base` / `incoming` 之间**无重复 id**（各调用点用 id 集合先过滤），
+ * 这样归并结果天然去重。
+ */
+function mergeByTimestamp(base: Message[], incoming: Message[]): Message[] {
+  if (incoming.length === 0) return base;
+  if (base.length === 0) return incoming;
+
+  const out: Message[] = [];
+  out.length = base.length + incoming.length;
+  let i = 0;
+  let j = 0;
+  let k = 0;
+  while (i < base.length && j < incoming.length) {
+    const bi = base[i];
+    const ij = incoming[j];
+    if (!bi || !ij) break;
+    if (tsOf(bi) <= tsOf(ij)) {
+      out[k] = bi;
+      i += 1;
+    } else {
+      out[k] = ij;
+      j += 1;
+    }
+    k += 1;
+  }
+  while (i < base.length) {
+    const bi = base[i];
+    if (!bi) break;
+    out[k] = bi;
+    i += 1;
+    k += 1;
+  }
+  while (j < incoming.length) {
+    const ij = incoming[j];
+    if (!ij) break;
+    out[k] = ij;
+    j += 1;
+    k += 1;
+  }
+  out.length = k;
+  return out;
+}
+
+/** 过滤出 `candidates` 中 id 不在 `existing` 里的项（避免重复 id 破坏归并去重假设）。 */
+function withoutExistingIds(candidates: Message[], existing: Message[]): Message[] {
+  if (candidates.length === 0) return candidates;
+  const ids = new Set(existing.map((m) => m.id));
+  return candidates.filter((m) => !ids.has(m.id));
+}
+
 interface UseMessageLoaderParams {
   roomId: string;
   processedIdsRef: React.MutableRefObject<Set<string>>;
@@ -51,7 +114,7 @@ export function useMessageLoader({ roomId, processedIdsRef, abortControllerRef }
   // Keep oldestTimeRef in sync
   useEffect(() => {
     if (messages.length > 0) {
-      oldestTimeRef.current = messages[0].timestamp;
+      oldestTimeRef.current = messages[0]?.timestamp ?? null;
     } else {
       oldestTimeRef.current = null;
     }
@@ -92,18 +155,14 @@ export function useMessageLoader({ roomId, processedIdsRef, abortControllerRef }
           return;
         }
         const dbMessages = data.messages.map((m: Message) => ({ ...m, sendStatus: 'sent' as const }));
-        const map = new Map<string, Message>();
         dbMessages.forEach((msg: Message) => {
-          map.set(msg.id, msg);
           processedIdsRef.current.add(msg.id);
         });
         trimProcessedIds(processedIdsRef.current);
-        initial.forEach((msg) => {
-          if (!map.has(msg.id)) map.set(msg.id, msg);
-        });
-        const merged = Array.from(map.values()).sort(
-          (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-        );
+        // DB 是权威源；本地缓存里 DB 未返回的部分（更早的历史）保留并归并。
+        // 两个输入均已升序 → 线性归并，避免全量 sort（P2-22）。
+        const cacheOnly = withoutExistingIds(initial, dbMessages);
+        const merged = mergeByTimestamp(cacheOnly, dbMessages);
         setMessages(merged);
         safeSetCache(cacheKey, merged);
         setHasMore(data.messages.length === PAGE_SIZE);
@@ -151,11 +210,10 @@ export function useMessageLoader({ roomId, processedIdsRef, abortControllerRef }
       trimProcessedIds(processedIdsRef.current);
 
       setMessages((prev) => {
-        const map = new Map<string, Message>();
-        [...olderData, ...prev].forEach((msg) => map.set(msg.id, msg));
-        const merged = Array.from(map.values()).sort(
-          (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-        );
+        // prev 里已有的条目优先（本地可能已有更新后的内容，如编辑/撤回后的乐观态）；
+        // olderData 只补 prev 没有的 id，然后线性归并（P2-22，替代全量 sort）。
+        const extra = withoutExistingIds(olderData, prev);
+        const merged = mergeByTimestamp(extra, prev);
         safeSetCache(`${STORAGE_CONFIG_KEYS.MESSAGES_PREFIX}${roomId}`, merged);
         return merged;
       });
@@ -173,7 +231,7 @@ export function useMessageLoader({ roomId, processedIdsRef, abortControllerRef }
 
   const syncNewMessages = useCallback(async (): Promise<number> => {
     const current = messagesRef.current;
-    const newestTimestamp = current.length > 0 ? current[current.length - 1].timestamp : null;
+    const newestTimestamp = current[current.length - 1]?.timestamp ?? null;
 
     try {
       const params = new URLSearchParams({ roomId });
@@ -196,9 +254,8 @@ export function useMessageLoader({ roomId, processedIdsRef, abortControllerRef }
         if (toAdd.length === 0) return prev;
         addedCount = toAdd.length;
         trimProcessedIds(processedIdsRef.current);
-        const merged = [...prev, ...toAdd].sort(
-          (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-        );
+        // toAdd 已按 id 去重且都是更新的消息 → 直接线性归并（P2-22，替代全量 sort）
+        const merged = mergeByTimestamp(prev, toAdd);
         safeSetCache(`${STORAGE_CONFIG_KEYS.MESSAGES_PREFIX}${roomId}`, merged);
         return merged;
       });

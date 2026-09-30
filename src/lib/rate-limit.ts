@@ -32,7 +32,8 @@ export const RATE_LIMIT_RULES: Array<{
   },
   {
     pathPrefix: '/api/upload-proxy',
-    config: { windowMs: 60 * 1000, max: 10 },
+    // P1-7：该端点会消耗服务端 ImgBB 配额，从 10/min 收紧到 6/min
+    config: { windowMs: 60 * 1000, max: 6 },
   },
   // 发消息：中等限流
   {

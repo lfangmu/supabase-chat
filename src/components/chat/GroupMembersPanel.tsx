@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useCallback } from 'react';
-import { X, UserPlus, Crown, Loader2, LogOut, Trash2 } from 'lucide-react';
+import { X, UserPlus, Crown, Loader2, LogOut, Trash2, AlertTriangle } from 'lucide-react';
 import Avatar from './Avatar';
 import { RoomMember } from '@/types';
 import { showError, showSuccess } from '@/utils/errorHandler';
@@ -19,9 +19,26 @@ interface GroupMembersPanelProps {
   onRemove: (target: string) => Promise<{ success: boolean; message?: string }>;
   onSetRole: (target: string, role: 'owner' | 'admin' | 'member') => Promise<{ success: boolean; message?: string }>;
   onLeft: () => void;
+  /** 点击成员头像：打开个人资料卡 */
+  onOpenProfile?: (member: { id: string; name: string }) => void;
 }
 
 const roleLabel: Record<string, string> = { owner: '群主', admin: '管理员', member: '' };
+
+/**
+ * 待确认的操作（P3 可访问性修复）。
+ *
+ * 此前三处操作都用阻塞式原生 `confirm()` —— 它会冻结主线程、无法被无障碍工具读取、
+ * 在 PWA/WebView 里样式与文案不可控，且移动端 Safari 对其有节流限制。
+ * 现在改为组件内自绘的确认弹层。
+ */
+interface PendingConfirm {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  destructive?: boolean;
+  run: () => Promise<void>;
+}
 
 const GroupMembersPanel: React.FC<GroupMembersPanelProps> = ({
   roomName,
@@ -34,54 +51,89 @@ const GroupMembersPanel: React.FC<GroupMembersPanelProps> = ({
   onRemove,
   onSetRole,
   onLeft,
+  onOpenProfile,
 }) => {
   const [busy, setBusy] = useState<string | null>(null);
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
   const onlineSet = new Set(onlineNicknames);
   const myRole = members.find((m) => m.id === currentUserId)?.role ?? 'member';
   const isOwner = myRole === 'owner';
 
-  const handleRemove = useCallback(async (targetId: string, targetName: string) => {
-    if (!confirm(`确定将「${targetName}」移出群聊？`)) return;
-    setBusy(targetId);
+  const runConfirmed = useCallback(async () => {
+    if (!pendingConfirm) return;
+    setConfirmBusy(true);
     try {
-      const r = await onRemove(targetId);
-      if (r.success) showSuccess('已移出群聊');
-      else showError(r.message || '操作失败');
+      await pendingConfirm.run();
     } finally {
-      setBusy(null);
+      setConfirmBusy(false);
+      setPendingConfirm(null);
     }
+  }, [pendingConfirm]);
+
+  const handleRemove = useCallback((targetId: string, targetName: string) => {
+    setPendingConfirm({
+      title: '移出群聊',
+      message: `确定将「${targetName}」移出群聊？`,
+      confirmLabel: '移出',
+      destructive: true,
+      run: async () => {
+        setBusy(targetId);
+        try {
+          const r = await onRemove(targetId);
+          if (r.success) showSuccess('已移出群聊');
+          else showError(r.message || '操作失败');
+        } finally {
+          setBusy(null);
+        }
+      },
+    });
   }, [onRemove]);
 
-  const handleTransfer = useCallback(async (targetId: string, targetName: string) => {
-    if (!confirm(`确定把群主转让给「${targetName}」？转让后你将变为普通成员。`)) return;
-    setBusy(targetId);
-    try {
-      const r = await onSetRole(targetId, 'owner');
-      if (r.success) {
-        await onSetRole(currentUserId, 'member');
-        showSuccess('群主已转让');
-      } else {
-        showError(r.message || '转让失败');
-      }
-    } finally {
-      setBusy(null);
-    }
+  const handleTransfer = useCallback((targetId: string, targetName: string) => {
+    setPendingConfirm({
+      title: '转让群主',
+      message: `确定把群主转让给「${targetName}」？转让后你将变为普通成员。`,
+      confirmLabel: '转让',
+      run: async () => {
+        setBusy(targetId);
+        try {
+          const r = await onSetRole(targetId, 'owner');
+          if (r.success) {
+            // 服务端已原子完成「旧群主降级 + 新群主上位」；这次调用是幂等的兼容兜底
+            await onSetRole(currentUserId, 'member');
+            showSuccess('群主已转让');
+          } else {
+            showError(r.message || '转让失败');
+          }
+        } finally {
+          setBusy(null);
+        }
+      },
+    });
   }, [onSetRole, currentUserId]);
 
-  const handleLeave = useCallback(async () => {
-    if (!confirm('确定退出该群聊？')) return;
-    setBusy(currentUserId);
-    try {
-      const r = await onRemove(currentUserId);
-      if (r.success) {
-        showSuccess('已退出群聊');
-        onLeft();
-      } else {
-        showError(r.message || '退出失败');
-      }
-    } finally {
-      setBusy(null);
-    }
+  const handleLeave = useCallback(() => {
+    setPendingConfirm({
+      title: '退出群聊',
+      message: '确定退出该群聊？',
+      confirmLabel: '退出',
+      destructive: true,
+      run: async () => {
+        setBusy(currentUserId);
+        try {
+          const r = await onRemove(currentUserId);
+          if (r.success) {
+            showSuccess('已退出群聊');
+            onLeft();
+          } else {
+            showError(r.message || '退出失败');
+          }
+        } finally {
+          setBusy(null);
+        }
+      },
+    });
   }, [onRemove, currentUserId, onLeft]);
 
   return (
@@ -89,6 +141,9 @@ const GroupMembersPanel: React.FC<GroupMembersPanelProps> = ({
       <div
         className="w-full max-w-lg max-h-[85vh] bg-card rounded-t-2xl sm:rounded-2xl flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="群聊信息"
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
           <div className="min-w-0">
@@ -110,7 +165,12 @@ const GroupMembersPanel: React.FC<GroupMembersPanelProps> = ({
               {members.map((m) => (
                 <div key={m.id} className="flex flex-col items-center gap-1 relative group">
                   <div className="relative">
-                    <Avatar name={m.display_name} avatar={m.avatar} size={48} />
+                    <Avatar
+                      name={m.display_name}
+                      avatar={m.avatar}
+                      size={48}
+                      onClick={onOpenProfile ? () => onOpenProfile({ id: m.id, name: m.display_name }) : undefined}
+                    />
                     {onlineSet.has(m.display_name) && (
                       <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-green-500 border-2 border-card" />
                     )}
@@ -173,6 +233,52 @@ const GroupMembersPanel: React.FC<GroupMembersPanelProps> = ({
           </button>
         </div>
       </div>
+
+      {/* 自绘确认弹层（替代阻塞式原生 confirm()，见上方 PendingConfirm 注释） */}
+      {pendingConfirm && (
+        <div
+          className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-6"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (!confirmBusy) setPendingConfirm(null);
+          }}
+        >
+          <div
+            className="w-full max-w-xs bg-card rounded-2xl p-5 flex flex-col gap-3"
+            onClick={(e) => e.stopPropagation()}
+            role="alertdialog"
+            aria-modal="true"
+            aria-label={pendingConfirm.title}
+          >
+            <div className="flex items-center gap-2">
+              <AlertTriangle
+                className={`w-5 h-5 flex-shrink-0 ${pendingConfirm.destructive ? 'text-destructive' : 'text-amber-500'}`}
+              />
+              <h3 className="text-sm font-semibold text-foreground">{pendingConfirm.title}</h3>
+            </div>
+            <p className="text-[13px] text-muted-foreground leading-relaxed">{pendingConfirm.message}</p>
+            <div className="flex gap-2 mt-1">
+              <button
+                onClick={() => setPendingConfirm(null)}
+                disabled={confirmBusy}
+                className="flex-1 h-9 rounded-xl bg-muted text-foreground text-sm font-medium disabled:opacity-60"
+              >
+                取消
+              </button>
+              <button
+                onClick={runConfirmed}
+                disabled={confirmBusy}
+                className={`flex-1 h-9 rounded-xl text-white text-sm font-medium flex items-center justify-center gap-1.5 disabled:opacity-60 ${
+                  pendingConfirm.destructive ? 'bg-destructive' : 'bg-primary'
+                }`}
+              >
+                {confirmBusy && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                {pendingConfirm.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

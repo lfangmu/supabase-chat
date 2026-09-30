@@ -55,6 +55,11 @@ export const useMessages = (roomId: string, onRoomDeleted?: (roomId: string) => 
     messagesRef.current = messages;
   }, [messages]);
 
+  // 权威刷新：收到 edit-message / withdraw-message 广播时，按 id 回源 DB 取回真实内容。
+  // 用 ref 间接调用，因为 useRelayRealtime 在下面（更早）就要用到这个回调，
+  // 而真正的实现依赖 setMessages。
+  const authoritativeRefreshRef = useRef<(id: string) => void>(() => {});
+
   // 实时链路：服务端中继（SSE 收 + POST 发），替代 supabase.channel 的 WebSocket。
   // 浏览器全程只走 HTTP，规避国内对浏览器 → Cloudflare WebSocket 的封锁。
   const { sendBroadcast } = useRelayRealtime({
@@ -74,6 +79,7 @@ export const useMessages = (roomId: string, onRoomDeleted?: (roomId: string) => 
     roomIds: params?.roomIds,
     onNewDM: params?.onNewDM,
     onReaction: handleReactionUpdate,
+    onAuthoritativeUpdate: (messageId: string) => authoritativeRefreshRef.current(messageId),
     isActive: !!params?.isActive,
     onMention: params?.onMention,
   });
@@ -146,6 +152,50 @@ export const useMessages = (roomId: string, onRoomDeleted?: (roomId: string) => 
       return null;
     }
   }, [setMessages]);
+
+  // P0-1 收口：编辑 / 撤回广播只当「信令」用，内容一律回源 DB 取权威值，
+  // 避免攻击者伪造 `edit-message` 广播内容（服务端已鉴权，客户端再兜一层）。
+  const refreshMessageById = useCallback(async (messageId: string) => {
+    try {
+      const res = await fetch(`/api/messages/by-id?id=${encodeURIComponent(messageId)}`);
+      const data = await res.json();
+      if (!data.success || !data.message) return;
+      const fresh = data.message as Message;
+      setMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === fresh.id);
+        if (idx === -1) {
+          return [...prev, { ...fresh, sendStatus: 'sent' as const }].sort(
+            (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+          );
+        }
+        const existing = prev[idx];
+        if (!existing) return prev;
+        // 只覆盖「服务端权威字段」，保留纯客户端状态（sendStatus / readByOther / tempId）
+        const merged: Message = {
+          ...existing,
+          content: fresh.content,
+          type: fresh.type,
+          timestamp: fresh.timestamp,
+          edited_at: fresh.edited_at ?? null,
+          withdrawn_at: fresh.withdrawn_at ?? null,
+          file_name: fresh.file_name ?? null,
+          file_size: fresh.file_size ?? null,
+          file_mime: fresh.file_mime ?? null,
+        };
+        const next = [...prev];
+        next[idx] = merged;
+        return next;
+      });
+    } catch {
+      /* 网络异常时保留本地内容，下一次 syncNewMessages 会修正 */
+    }
+  }, [setMessages]);
+
+  useEffect(() => {
+    authoritativeRefreshRef.current = (id: string) => {
+      void refreshMessageById(id);
+    };
+  }, [refreshMessageById]);
 
   const loadReactions = useCallback(async (rid: string) => {
     try {

@@ -9,10 +9,9 @@ import { useLightbox } from '@/components/chat/Lightbox';
 
 interface ImageMessageProps {
   message: Message;
-  isSelf: boolean;
 }
 
-const ImageMessage: React.FC<ImageMessageProps> = React.memo(({ message, isSelf }) => {
+const ImageMessage: React.FC<ImageMessageProps> = React.memo(({ message }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const resolvedUrl = useSignedUrl(message.content);

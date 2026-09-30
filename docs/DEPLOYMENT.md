@@ -1,6 +1,6 @@
 # 部署指南（Deployment）
 
-一份从零开始的部署流程。整体架构：**Cloudflare Pages 托管前端 + Supabase 托管数据库与 Realtime**；浏览器经**同源的 Pages Functions**（`src/app/api/*`，详见 §3.5）访问 Supabase，以规避国内对 `*.supabase.co` 的拦截。应用与代理**同一个 Pages 项目**部署，push 到 `main` 即自动上线。
+一份从零开始的部署流程。整体架构：**Cloudflare Pages 托管前端 + Supabase 托管数据库与 Storage**；浏览器经**同源的 Pages Functions**（`src/app/api/*`，详见 §3.5）访问 Supabase，以规避国内对 `*.supabase.co` 的拦截。应用与代理**同一个 Pages 项目**部署，push 到 `main` 即自动上线。
 
 > 推荐先完成 **Supabase（§2）** 再完成 **Cloudflare（§3）**——因为 Cloudflare 的环境变量里要用到 Supabase 的 Project URL / Publishable key，先建好 Supabase 顺手拿到密钥再填 Cloudflare。
 
@@ -9,7 +9,7 @@
 ## 0. 前置条件
 
 - 一个 GitHub 账号
-- Node.js 18.17+（仅本地生成密钥 / 本地开发时需要；纯云端部署不需要）
+- Node.js **≥ 22**（本仓库 `package.json` 的 `engines` 要求；仅本地开发 / 本地构建时需要，纯云端部署不需要）
 - 一个你自己的域名（可选；Cloudflare Pages 也提供 `*.pages.dev` 免费子域）
 
 ---
@@ -42,25 +42,26 @@
 
 ### 2.3 创建 Storage 桶
 
-`Storage → New bucket`，名称 `chat-media`（存放图片/视频），权限默认即可。
+`Storage → New bucket`，名称 `chat-media`（存放图片 / 视频 / 文件），权限默认即可。
 
-### 2.4 关联 GitHub 仓库（让迁移与函数自动部署）
+### 2.4 关联 GitHub 仓库（让迁移自动部署）
 
 1. 项目 → **Project Settings → Integrations**（GitHub Integration 区）→ **Authorize GitHub**，授权你 fork 的仓库。
 2. 设置 **Working directory**（仓库里 `supabase/` 所在的相对路径：仓库根目录直接填 `.`），然后点 **Enable integration**。
-3. 在 GitHub Integration 配置里开启 **Deploy to production**——push 到 `main` 时会自动应用迁移（含把 `messages` 表加入实时发布、创建房间成员 RLS 策略）。
+3. 在 GitHub Integration 配置里开启 **Deploy to production**——push 到 `main` 时会自动应用 `supabase/migrations/` 迁移。
 
-> 关联后：push 到 `main` 时 Supabase 自动应用 `supabase/migrations/` 迁移。**GitHub Integration 本身不需要任何 `SUPABASE_*` 仓库密钥**（`SUPABASE_ACCESS_TOKEN` / `SUPABASE_PROJECT_REF` 都不需要）。注意：Edge Functions 面板里**没有**单独的「Auto deploy」开关，函数的自动部署由上面的 GitHub Integration 统一控制（本项目已不再依赖 Edge Function）。
+> 关联后：push 到 `main` 时 Supabase 自动应用迁移。**GitHub Integration 本身不需要任何 `SUPABASE_*` 仓库密钥**（`SUPABASE_ACCESS_TOKEN` / `SUPABASE_PROJECT_REF` 都不需要）。本项目已不再依赖 Edge Function。
 
 ### 2.5 开启 Supabase Auth（仅需一次配置）
 
-实时消息由数据库 **Postgres Changes（CDC）+ RLS** 直接推送，RLS 里的 `auth.uid()` 来自**真实的 Supabase Auth 会话**（浏览器端 `@supabase/ssr` 客户端持有），**不再需要任何 JWT 签发密钥**——`SUPABASE_JWT_SECRET` / `CHAT_JWT_SECRET` 均已废弃。
+实时事件由**服务端中继**投递：服务端以自身身份连 Supabase Realtime，订阅 `postgres_changes` / `broadcast` / `presence`，再经 SSE（`/api/realtime`）推给浏览器——因为国内网络会拦截浏览器直连 `*.supabase.co` 的 WebSocket 升级请求。RLS 里的 `auth.uid()` 来自**真实的 Supabase Auth 会话**，**不再需要任何 JWT 签发密钥**——`SUPABASE_JWT_SECRET` / `CHAT_JWT_SECRET` 均已废弃。
 
 1. Supabase 项目 → **Authentication → Sign In / Providers**，开启：
-   - **Email**（邮箱注册/登录）
+   - **Email**（邮箱注册 / 登录）
    - **Anonymous sign-ins**（匿名登录，保留「不用注册直接聊」的体验）
 2. （可选）**Authentication → URL Configuration** 里把站点地址加入 Redirect URLs，避免邮箱确认后跳回失败。
-3. 管理员：在 SQL Editor 里把目标用户的 `public.users.role` 改成 `admin`：
+3. **Realtime Authorization**：迁移 `00026` 会创建 `realtime.messages` 的 RLS 策略并把频道置 `private:true`。请确认 **Project Settings → Realtime**（或 Realtime 页面）里 **Allow public access to channels** 处于**关闭**状态——否则 RLS 策略不生效。迁移会自动处理，若你手动改过配置请核对一遍。
+4. 管理员：在 SQL Editor 里把目标用户的 `public.users.role` 改成 `admin`：
    ```sql
    update public.users set role = 'admin' where id = '<该用户的 auth.uid()>';
    ```
@@ -72,8 +73,8 @@
 
 push 一次到 `main`（或等上一步完成后），到：
 
-- **Database → Tables** 应能看到 `rooms` / `messages` 等表；
-- （可选）确认 **Database → Publications** 中 `supabase_realtime` 已包含 `messages` 表（迁移 00019 会自动加入；如手动验证，可用 `select * from pg_publication_tables where pubname='supabase_realtime';`）。
+- **Database → Tables** 应能看到 `rooms` / `messages` / `friends` / `message_reads` 等表；
+- （可选）确认 **Database → Publications** 中 `supabase_realtime` 已包含 `messages` 表（迁移 00019 会自动加入；手动验证可用 `select * from pg_publication_tables where pubname='supabase_realtime';`）。
 
 ---
 
@@ -93,26 +94,22 @@ push 一次到 `main`（或等上一步完成后），到：
    - **Build output directory**：`.vercel/output/static`
 4. 先点 **Save and Deploy** 让它跑一次（会因缺变量先构建出空壳，没关系，下一步补变量后重部署）。
 
-
 ### 3.3 设置参数（环境变量）
 
 进入项目 **Settings → Variables and Secrets（或 Environment variables）**，逐个添加：
 
-| 变量                             | 必填 | 说明 / 取值来源                                                                                                            |
-| ------------------------------ | -- | -------------------------------------------------------------------------------------------------------------------- |
-| `NEXT_PUBLIC_SUPABASE_URL`     | ✅  | Supabase Project URL（见 §2.2）                                                                                         |
-| `NEXT_PUBLIC_SUPABASE_KEY`     | ✅  | Supabase **Publishable key**（见 §2.2）                                                                                 |
-| `NEXT_PUBLIC_SUPABASE_PROXY_URL` | ✅ | 同源代理前缀（见 §3.5），固定为 `https://<你的应用域名>/api`（如 `https://chat.example.com/api`）；**浏览器经此访问 Supabase**，规避国内对 `*.supabase.co` 的拦截。**必须与应用同源（同一 Pages 项目）。** |
-| `SUPABASE_SERVICE_ROLE_KEY`    | ✅  | Supabase **Secret key**（见 §2.2，**保密，切勿加 `NEXT_PUBLIC_` 前缀**）                                                         |
-| `IMGBB_API_KEY`                | ⚪  | ImgBB 图片代理上传 key（可选，<32MB 走 Supabase Storage）                                                                        |
-| `NEXT_PUBLIC_VAPID_PUBLIC_KEY` | ⚪  | Web Push 公钥（前端访问，需 `NEXT_PUBLIC_`）                                                                                   |
-| `VAPID_PRIVATE_KEY`            | ⚪  | Web Push 私钥（服务端）                                                                                                     |
-| `VAPID_SUBJECT`                | ⚪  | Web Push subject（`mailto:` 或 `https://`）                                                                             |
-| `NEXT_DISABLE_VERSION_CHECK`   | ⚪  | 设为 `1` 关闭 Next.js 版本检查（联网受限环境）                                                                                       |
+| 变量 | 必填 | 说明 / 取值来源 |
+|---|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | ✅ | Supabase Project URL（见 §2.2） |
+| `NEXT_PUBLIC_SUPABASE_KEY` | ✅ | Supabase **Publishable key**（见 §2.2） |
+| `NEXT_PUBLIC_SUPABASE_PROXY_URL` | ✅ | 同源代理前缀（见 §3.5），固定为 `https://<你的应用域名>/api`（如 `https://chat.example.com/api`）；**浏览器经此访问 Supabase**。**必须与应用同源（同一 Pages 项目）。** |
+| `SUPABASE_SERVICE_ROLE_KEY` | ✅ | Supabase **Secret key**（见 §2.2，**保密，切勿加 `NEXT_PUBLIC_` 前缀**） |
+| `IMGBB_API_KEY` | ⚪ | ImgBB 图片代理上传 key（可选，<32MB 走 Supabase Storage） |
+| `NEXT_DISABLE_VERSION_CHECK` | ⚪ | 设为 `1` 关闭 Next.js 版本检查（联网受限环境） |
 
-> 鉴权改由 **Supabase Auth** 管理：身份 = `auth.uid()`（UUID），会话 cookie 由 `@supabase/ssr` 维护。
-> 已废弃并移除的变量：`CHAT_JWT_SECRET`、`SUPABASE_JWT_SECRET`、`CHAT_PASSWORD`、`CHAT_AUTH_ENABLED`、`CHAT_VERSION_SALT`、`ADMIN_PASSWORD`（管理员改由 `public.users.role='admin'` 判定）。
-> ⚠️ **新增/修改环境变量后必须触发全新构建**（push 新提交或控制台 **Deploy**），只点 **Retry** 不会注入新变量。
+> 鉴权由 **Supabase Auth** 管理：身份 = `auth.uid()`（UUID），会话 Cookie 由 `@supabase/ssr` 维护。
+> 已废弃并移除的变量：`CHAT_JWT_SECRET`、`SUPABASE_JWT_SECRET`、`CHAT_PASSWORD`、`CHAT_AUTH_ENABLED`、`CHAT_VERSION_SALT`、`ADMIN_PASSWORD`、`SUPER_PASSWORD`、`NEXT_PUBLIC_IMGBB_API_KEY`（管理员改由 `public.users.role='admin'` 判定）。
+> ⚠️ **新增 / 修改环境变量后必须触发全新构建**（push 新提交或控制台 **Deploy**），只点 **Retry** 不会注入新变量。
 
 > **前端改完代码要生效，还有两步（否则浏览器还在跑旧包）**：① 每次重新部署前端后，若改动了客户端逻辑（含会话 cookie 名），去 DevTools → Application → Service Workers → **Unregister** + **Clear storage** + 硬刷新；或把 `public/sw.js` 的 `CACHE_NAME` 递增（如 `supabase-chat-v2`）再部署，让旧缓存自动失效。② 部署后旧登录会话失效，**需重新登录一次**。详见 §3.5。
 
@@ -124,10 +121,10 @@ push 一次到 `main`（或等上一步完成后），到：
 
 ### 3.5 同源反向代理（Pages Functions，国内可达，必选）
 
-浏览器若直接连 `*.supabase.co` 在国内会被网络层拦截（登录/实时全部失败）。本项目把反向代理**折叠进 `supabase-chat` 同一个 Pages 项目**，以同源的 Next.js Route Handlers 部署，浏览器全程只访问你自己的应用域名：
+浏览器若直接连 `*.supabase.co` 在国内会被网络层拦截（登录 / 实时全部失败）。本项目把反向代理**折叠进 `supabase-chat` 同一个 Pages 项目**，以同源的 Next.js Route Handlers 部署，浏览器全程只访问你自己的应用域名：
 
 - `src/app/api/rest/v1/[[...path]]` / `auth/v1/[[...path]]` / `storage/v1/[[...path]]` —— REST / Auth / Storage 透传到真实 Supabase 项目（见 `src/lib/supabaseProxy.ts`）；
-- `src/app/api/realtime`（SSE 长连接）+ `src/app/api/realtime/send`（POST 发送）—— 实时中继，把「浏览器↔Supabase 的 WebSocket」拆成两段 HTTP，绕开国内 WebSocket 封锁（见 `src/lib/realtimeProxy.ts`）。
+- `src/app/api/realtime`（SSE 长连接）+ `src/app/api/realtime/send`（POST 发送）—— 实时中继，把「浏览器 ↔ Supabase 的 WebSocket」拆成两段 HTTP，绕开国内 WebSocket 封锁（见 `src/lib/realtimeProxy.ts`）。
 
 代理目标 host 由 `NEXT_PUBLIC_SUPABASE_URL` 自动推导，因此**生产 / 预览指向不同 Supabase 项目也能正确转发**，无需为代理单独维护 host。
 
@@ -165,10 +162,10 @@ npx cap build android
 
 ## 6. 验证清单
 
-- [ ] 打开部署地址，`GET /api/keepalive` 返回 200
 - [ ] `https://<你的应用域名>/api/health` 返回 `200` 且 `sameOrigin: true`
+- [ ] `GET /api/keepalive` 返回 200
 - [ ] 匿名进入（Supabase Auth anonymous sign-in）成功，能发消息、实时收到
-- [ ] 邮箱注册/登录成功，且换设备登录仍能拿到同一身份
+- [ ] 邮箱注册 / 登录成功，且换设备登录仍能拿到同一身份
 - [ ] 登录后任意 `/api/*`（如 `/api/me`）正常返回，**不再 401**（否则清 SW 缓存 + 重新登录，见 §3.5）
 - [ ] `/admin` 用 role=admin 的账号能进、能删群；非 admin 账号访问 `/api/admin/*` 返回 403
 - [ ] Supabase Tables 有数据；`supabase_realtime` 发布含 `messages` 表（迁移 00019 自动加入）
@@ -176,43 +173,49 @@ npx cap build android
 
 ---
 
-
 ## 7. API 端点速查
 
-| 方法     | 路径                            | 鉴权            | 说明                                     |
-| ------ | ----------------------------- | ------------- | -------------------------------------- |
-| GET    | `/api/keepalive`              | 公开            | 健康检查（保活）                                |
-| GET    | `/api/health`                | 公开            | 部署自检（build / targetHost / sameOrigin）     |
-| GET    | `/api/realtime`              | Supabase Auth  | 实时接收中继（SSE）：postgres_changes / broadcast / presence |
-| POST   | `/api/realtime/send`         | Supabase Auth  | 实时发送中继（typing / 撤回 / 编辑 / 回执等 broadcast） |
-| GET    | `/api/me`                     | Supabase Auth  | 当前会话资料（`id` / `display_name` / `role` 等） |
-| GET    | `/api/rooms?ids=`             | Supabase Auth  | 返回指定 ID 的房间                            |
-| POST   | `/api/rooms`                  | Supabase Auth  | 创建房间（群聊生成 8 位短房间号；私聊为 `dm:<uuidA>:<uuidB>`） |
-| PUT    | `/api/rooms`                  | Supabase Auth  | 重命名房间（禁改 `default-room`）               |
-| DELETE | `/api/rooms`                  | Supabase Auth  | 删除群聊（禁删 `default-room`）                |
-| GET    | `/api/messages?roomId=&...`   | Supabase Auth  | 房间消息分页                                 |
-| POST   | `/api/messages`               | Supabase Auth  | 发送消息（写 `user_id` + 展示名 `user`）          |
-| DELETE | `/api/messages`               | Supabase Auth  | 撤回自己的消息（按 `user_id` 校验归属，清理存储文件）       |
-| POST   | `/api/upload-media`           | Supabase Auth  | Supabase Storage 上传                    |
-| POST   | `/api/upload-proxy`           | Supabase Auth  | ImgBB 代理上传                             |
-| GET    | `/api/signed-url`             | Supabase Auth  | 私有资源签名 URL                             |
-| GET    | `/api/admin/rooms`            | role=admin    | 全部群聊 + 最新消息摘要                          |
-| DELETE | `/api/admin/rooms`            | admin_session | 删除群聊（禁删 `default-room`）                |
-| GET    | `/api/admin/messages?roomId=` | admin_session | 房间消息只读                                 |
-| GET    | `/api/keepalive`              | 公开            | 保活 ping（无需登录）                          |
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| GET | `/api/health` | 公开 | 部署自检（build / targetHost / sameOrigin） |
+| GET | `/api/keepalive` | 公开 | 保活 ping（无需登录） |
+| GET | `/api/me` | 会话 | 当前会话资料（`id` / `display_name` / `role` 等） |
+| GET / POST | `/api/users` | 会话 | 查询用户资料 / 更新自己的资料 |
+| GET / POST / PUT / DELETE | `/api/friends` | 会话 | 好友列表 / 发起申请 / 处理申请 / 删除好友 |
+| GET | `/api/dm-list` | 会话 | 私聊会话列表 |
+| GET / POST / PUT / DELETE | `/api/rooms` | 会话 | 查询（须传 `?ids=`）/ 创建 / 重命名 / 删除群聊 |
+| GET / POST / PUT / DELETE | `/api/rooms/members` | 会话 | 群成员查询 / 增删改 |
+| GET | `/api/rooms/mine` | 会话 | 我加入的房间 |
+| GET / POST / PUT / DELETE | `/api/messages` | 会话 | 分页拉取 / 发送 / 编辑 / 撤回 |
+| GET | `/api/messages/search` | 会话 | 跨会话全文搜索 |
+| GET | `/api/messages/by-id` | 会话 | 按 id 取消息 |
+| GET / POST | `/api/messages/read` | 会话 | 已读回执查询 / 上报 |
+| GET / POST | `/api/messages/reactions` | 会话 | 表情回应查询 / 切换 |
+| POST | `/api/messages/clear` | 会话 | 清空聊天记录（本机） |
+| GET | `/api/realtime` | 会话（token 验签） | 实时接收中继（SSE）：postgres_changes / broadcast / presence |
+| POST | `/api/realtime/send` | 会话 | 实时发送中继（typing / 撤回 / 编辑 / 回执等 broadcast） |
+| POST | `/api/upload-media` | 会话 | Supabase Storage 上传 |
+| POST | `/api/upload-proxy` | 会话 | ImgBB 代理上传 |
+| POST | `/api/signed-url` | 会话 | 私有资源签名 URL |
+| * | `/api/{rest,auth,storage}/v1/*` | 透传 | 同源反向代理（鉴权由上游 Supabase 完成） |
+| GET | `/api/admin/rooms` | role=admin | 全部群聊 + 最新消息摘要 |
+| DELETE | `/api/admin/rooms` | role=admin | 删除群聊（禁删 `default-room`） |
+| GET / DELETE | `/api/admin/messages` | role=admin | 房间消息只读 / 删除 |
+| GET | `/api/admin/audit-logs` | role=admin | 管理操作审计日志 |
+
+> 「会话」= 需已登录的 Supabase Auth 会话（middleware 校验）；「role=admin」= 额外校验 `public.users.role === 'admin'`。
 
 ---
 
-
 ## 8. 故障排除
 
-| 现象                                              | 排查                                                                                                                                                                                                                          |
-| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 现象 | 排查 |
+|---|---|
 | `/api/*` 全 401「未认证，请先登录」、但能登录注册 | 会话 cookie 名两端不一致：浏览器走同源代理、服务端走真实域名，默认推导的 cookie 名不同 → 服务端读不到会话。**确认代码 4 处 `cookieOptions.name` 已统一；redeploy Pages + 重新登录一次。** |
-| 改了代码 / 重新部署后依旧 401、旧功能没生效            | 浏览器在跑 SW 缓存里的旧 JS。把 `public/sw.js` 的 `CACHE_NAME` 递增（如 `supabase-chat-v2`）再部署，或 DevTools → Application → Service Workers → Unregister + Clear storage + 硬刷新。                                                                            |
-| 登录接口能通、但实时（Realtime）收不到消息           | ① Supabase 免费项目是否被暂停（去 Dashboard **Restore**）；② `supabase_realtime` 发布是否含 `messages` 表（迁移 00019 自动加入）；③ `messages` 表 RLS 策略「Authenticated members can read messages」是否存在。本项目不再需要 `SUPABASE_JWT_SECRET` 或 `/api/realtime-token`。 |
-| `/admin` 进不去 / 返回 403                           | 管理员走 Supabase Auth：由 `public.users.role='admin'` 判定。确认该账号已注册、且 `role` 已设为 `admin`（`update public.users set role='admin' where id='<uid>'`）；非 admin 访问 `/api/admin/*` 返回 403 是预期行为。            |
-| 数据库全部失败 / 实时不通 / keepalive 503 `Project is paused` | 多半是 Supabase 免费项目被暂停 → 去 Dashboard **Restore** 一次；恢复后保活任务持续唤醒。                                                                                                                                              |
-| 消息发出但自己/他人收不到实时（已排除上一条）           | 检查 Supabase `supabase_realtime` 发布是否含 `messages` 表（迁移 00019）、`messages` 表 RLS 策略「Authenticated members can read messages」是否存在、以及浏览器是否成功订阅 `postgres_changes`。 |
-| 新增环境变量不生效                                       | Cloudflare Pages **必须全新构建**（push 或控制台 Deploy），只点 Retry 不会注入                                                                                                                                                                 |
-| 上传失败                                            | 检查文件类型/大小（上限 50MB）、Supabase `chat-media` 桶权限、ImgBB key（图片兜底）                                                                                                                                                                |
+| 改了代码 / 重新部署后依旧 401、旧功能没生效 | 浏览器在跑 SW 缓存里的旧 JS。把 `public/sw.js` 的 `CACHE_NAME` 递增（如 `supabase-chat-v2`）再部署，或 DevTools → Application → Service Workers → Unregister + Clear storage + 硬刷新。 |
+| 登录接口能通、但实时收不到消息 | ① Supabase 免费项目是否被暂停（去 Dashboard **Restore**）；② `supabase_realtime` 发布是否含 `messages` 表（迁移 00019）；③ `messages` 表 RLS 策略是否存在；④ 迁移 00026 的 `realtime.messages` RLS 是否生效、**Allow public access to channels 是否已关闭**。 |
+| 实时连接偶发 429 | SSE 并发超限（每用户 10 / 每 IP 30）。槽位是带 TTL 的租约，异常断开的连接最多 2 分钟后自动回收；若持续 429 请检查是否有页面反复重连。 |
+| `/admin` 进不去 / 返回 403 | 管理员走 Supabase Auth：由 `public.users.role='admin'` 判定。确认该账号已注册、且 `role` 已设为 `admin`（`update public.users set role='admin' where id='<uid>'`）；非 admin 访问 `/api/admin/*` 返回 403 是预期行为。 |
+| 数据库全部失败 / 实时不通 / keepalive 503 `Project is paused` | 多半是 Supabase 免费项目被暂停 → 去 Dashboard **Restore** 一次；恢复后保活任务持续唤醒。 |
+| 新增环境变量不生效 | Cloudflare Pages **必须全新构建**（push 或控制台 Deploy），只点 Retry 不会注入。 |
+| 上传失败 | 检查文件类型 / 大小（上限 50MB）、Supabase `chat-media` 桶权限、ImgBB key（图片兜底）。 |

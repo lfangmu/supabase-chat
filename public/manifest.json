@@ -27,7 +27,7 @@
       "name": "默认聊天室",
       "short_name": "默认",
       "description": "打开默认聊天室",
-      "url": "/?room=default-room",
+      "url": "/",
       "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
     }
   ]

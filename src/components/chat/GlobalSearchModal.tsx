@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Search, X, Filter } from 'lucide-react';
 import Avatar from './Avatar';
 import { formatClock } from '@/utils/date-utils';
+import { mediaPlaceholder, mediaTypeLabel } from '@/utils/labels';
 
 interface SearchResult {
   id: string;
@@ -44,10 +45,25 @@ const GlobalSearchModal: React.FC<GlobalSearchModalProps> = React.memo(({ onClos
   const [searched, setSearched] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<number | null>(null);
+  /**
+   * P3 修复：搜索请求没有取消/序号机制，慢响应会覆盖新结果。
+   * 例：先搜「a」（慢）再搜「ab」（快）→ 「ab」的结果先渲染，随后「a」的旧响应到达把它覆盖，
+   * 用户看到的关键词与结果对不上。现在用 AbortController + 单调序号双保险。
+   */
+  const searchAbortRef = useRef<AbortController | null>(null);
+  const searchSeqRef = useRef(0);
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
+
+  // 卸载时中止在途请求，避免对已卸载组件 setState
+  useEffect(
+    () => () => {
+      searchAbortRef.current?.abort();
+    },
+    []
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -60,11 +76,20 @@ const GlobalSearchModal: React.FC<GlobalSearchModalProps> = React.memo(({ onClos
   const runSearch = useCallback(async () => {
     const term = query.trim();
     if (term.length === 0) {
+      searchAbortRef.current?.abort();
       setResults([]);
       setSearched(false);
       setLoading(false);
       return;
     }
+
+    // 取消上一次在途请求，并递增序号（响应回来时比对，过期则丢弃）
+    searchAbortRef.current?.abort();
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+    searchSeqRef.current += 1;
+    const seq = searchSeqRef.current;
+
     setLoading(true);
     try {
       const params = new URLSearchParams({ q: term });
@@ -72,14 +97,22 @@ const GlobalSearchModal: React.FC<GlobalSearchModalProps> = React.memo(({ onClos
       if (sender.trim()) params.set('sender', sender.trim());
       if (from) params.set('from', from);
       if (to) params.set('to', to);
-      const res = await fetch(`/api/messages/search?${params.toString()}`);
+      const res = await fetch(`/api/messages/search?${params.toString()}`, {
+        signal: controller.signal,
+      });
       const data = await res.json();
+      if (seq !== searchSeqRef.current) return; // 已有更新的搜索，丢弃本次结果
       setResults(data.success ? (data.results || []) : []);
-    } catch {
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (seq !== searchSeqRef.current) return;
       setResults([]);
     } finally {
-      setLoading(false);
-      setSearched(true);
+      // 只有最新一次请求才允许结束 loading 状态
+      if (seq === searchSeqRef.current) {
+        setLoading(false);
+        setSearched(true);
+      }
     }
   }, [query, typeFilter, sender, from, to]);
 
@@ -221,10 +254,10 @@ const GlobalSearchModal: React.FC<GlobalSearchModalProps> = React.memo(({ onClos
                   <span className="text-foreground/70">{r.user}: </span>
                   {r.type !== 'text' && (
                     <span className="inline-block text-[11px] text-primary/80 border border-primary/30 rounded px-1 mr-1 leading-tight align-middle">
-                      {r.type === 'image' ? '图片' : r.type === 'video' ? '视频' : r.type === 'voice' ? '语音' : '文件'}
+                      {mediaTypeLabel(r.type)}
                     </span>
                   )}
-                  {r.type === 'text' ? r.content : `[${r.type === 'image' ? '图片' : r.type === 'video' ? '视频' : r.type === 'voice' ? '语音' : '文件'}]`}
+                  {r.type === 'text' ? r.content : mediaPlaceholder(r.type)}
                 </div>
               </div>
             </button>

@@ -23,7 +23,10 @@ export interface GlobalPresenceUser {
 function sameUsers(a: GlobalPresenceUser[], b: GlobalPresenceUser[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
-    if (a[i].id !== b[i].id || a[i].nickname !== b[i].nickname) return false;
+    const ai = a[i];
+    const bi = b[i];
+    if (!ai || !bi) return false;
+    if (ai.id !== bi.id || ai.nickname !== bi.nickname) return false;
   }
   return true;
 }

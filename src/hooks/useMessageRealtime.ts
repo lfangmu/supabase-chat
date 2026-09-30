@@ -6,7 +6,7 @@ import { Message, Reaction } from '@/types';
 import { STORAGE_CONFIG_KEYS, MESSAGE_CONFIG } from '@/config';
 import { safeSetCache } from '@/utils/cacheUtils';
 import { notifyNewMessage, notifyMention, isMentioned, addMentionedRoom } from '@/utils/notifications';
-import { receiptHandlerRef } from './useReadReceipts';
+import { dispatchReceipt } from './useReadReceipts';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 
 const MAX_PROCESSED_IDS = MESSAGE_CONFIG.MAX_PROCESSED_IDS;
@@ -246,7 +246,7 @@ export function useMessageRealtime({
 
     // 已读回执：接收方标记我的消息已读 → 在我的消息下显示「已读」
     channel.on('broadcast', { event: 'receipt' }, ({ payload }) => {
-      receiptHandlerRef.current?.(payload as { messageIds?: string[] });
+      dispatchReceipt(payload as { messageIds?: string[] });
     });
 
     // Room deleted notification — auto-switch clients out of deleted room
@@ -296,7 +296,7 @@ export function useMessageRealtime({
     // 上次同步给 Realtime 的 access token，用于识别「会话已刷新但 socket 还在用旧 token」
     let lastAuthToken: string | null = null;
     const heartbeatTimer = setInterval(async () => {
-      const state = (channel as unknown as { state: string }).state;
+      const state = channel.state;
       if (state !== 'joined') {
         console.warn(`[Realtime] Room channel not joined (state=${state}), triggering rebuild`);
         setRoomReconnectTick((t) => t + 1);
@@ -328,7 +328,7 @@ export function useMessageRealtime({
     // 这里只负责把「没 joined」的 channel 重建掉。
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
-        const state = (channel as unknown as { state: string }).state;
+        const state = channel.state;
         if (state !== 'joined') {
           setRoomReconnectTick((t) => t + 1);
         }
@@ -377,7 +377,7 @@ export function useMessageRealtime({
 
     // Heartbeat for global channel — trigger full rebuild if dead
     const globalHeartbeat = setInterval(() => {
-      const state = (globalChannel as unknown as { state: string }).state;
+      const state = globalChannel.state;
       if (state !== 'joined') {
         setGlobalReconnectTick((t) => t + 1);
       }
@@ -385,7 +385,7 @@ export function useMessageRealtime({
 
     const handleGlobalVisibility = () => {
       if (document.visibilityState === 'visible') {
-        if ((globalChannel as unknown as { state: string }).state !== 'joined') {
+        if (globalChannel.state !== 'joined') {
           setGlobalReconnectTick((t) => t + 1);
         }
       }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
 import { getAuthUser } from '@/lib/auth-user';
+import { requireUuidForFilter } from '@/lib/validate';
 
 export const runtime = 'edge';
 
@@ -47,11 +48,13 @@ export async function GET(request: NextRequest) {
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }
+    // actor 会被拼进 `.or()` 过滤器表达式，先显式断言 UUID（P3）
+    const uid = requireUuidForFilter(actor);
     const supabase = getServiceClient();
     const { data, error } = await supabase
       .from('friends')
       .select('*')
-      .or(`user_a.eq.${actor},user_b.eq.${actor}`);
+      .or(`user_a.eq.${uid},user_b.eq.${uid}`);
 
     if (error) {
       return NextResponse.json({ success: false, message: '获取好友失败' }, { status: 500 });

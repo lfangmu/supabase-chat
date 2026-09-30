@@ -58,24 +58,3 @@ export const showError = (error: AppError | string) => {
 export const showSuccess = (message: string) => {
   toast.success(message);
 };
-
-// 处理网络错误
-export const handleNetworkError = (error: any) => {
-  console.error('网络错误:', error);
-  const errorMessage = error.message || '网络连接失败';
-  showError(createError(ErrorType.NETWORK_ERROR, errorMessage));
-};
-
-// 处理上传错误
-export const handleUploadError = (error: any) => {
-  console.error('上传错误:', error);
-  const errorMessage = error.message || '上传失败';
-  showError(createError(ErrorType.UPLOAD_FAILED, errorMessage));
-};
-
-// 处理消息发送错误
-export const handleMessageSendError = (error: any) => {
-  console.error('消息发送错误:', error);
-  const errorMessage = error.message || '发送失败';
-  showError(createError(ErrorType.MESSAGE_SEND_FAILED, errorMessage));
-};

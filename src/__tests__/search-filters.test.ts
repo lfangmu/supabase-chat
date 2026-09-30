@@ -17,7 +17,9 @@ function makeChain(data: unknown, log: any[][] = []) {
   return chain;
 }
 
-const ACTOR = 'actor-uuid';
+// 路由会显式校验 actor 是 UUID（因为它会被拼进 PostgREST 的 .or() 过滤器），
+// 因此夹具必须用真实形状的 UUID。
+const ACTOR = '11111111-2222-4333-8444-555555555555';
 const MSG_ROW = {
   id: 'm1', room_id: 'r1', user: 'Alice', content: 'hello world', type: 'text',
   timestamp: '2026-09-27T12:00:00.000Z', file_name: null, file_mime: null, user_id: 'u1',

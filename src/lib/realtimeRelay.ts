@@ -14,25 +14,34 @@ export type RelayEventType =
   | 'presence'
   | 'system';
 
+/**
+ * 中继事件的负载。
+ *
+ * 结构随事件类型而异，无法用一个精确接口描述；这里刻意用宽松字典而不是 `any`：
+ * `any` 会让「拼错字段名 / 忘了判空」一路静默通过类型检查（真实缺陷就是这么溜进生产的），
+ * 而 `Record<string, unknown>` 强制消费端在使用前显式收窄（typeof / Array.isArray / asString）。
+ */
+export type RelayPayload = Record<string, unknown>;
+
 export interface RelayEvent {
   type: RelayEventType;
   // message-insert / message-update: { roomId, row }
   // broadcast:                { roomId, event, payload }
   // presence:                 { roomId, event, state?, joins?, leaves? }
-  // system:                   payload
-  data: any;
+  // system:                   { status?, ... }
+  data: RelayPayload;
 }
 
 export interface ConnectRelayOptions {
   proxyUrl: string; // NEXT_PUBLIC_SUPABASE_PROXY_URL
   token: string; // 浏览器会话 access_token
   apikey: string; // NEXT_PUBLIC_SUPABASE_KEY（公开）
-  rooms: string[]; // 已加入房间 id 列表
-  userId?: string;
-  nickname?: string;
-  /** Supabase Auth UUID：全局在线（presence:global）以它为 key */
-  guid?: string;
+  rooms: string[]; // 已加入房间 id 列表（服务端会再按「本人可读」过滤一次）
+  // ⚠️ 这里刻意**不再**接受 userId / nickname / guid：
+  // presence 身份必须由服务端从 token 解出，客户端自报 = 可以冒充任意用户在线。
   onEvent: (ev: RelayEvent) => void;
+  /** 连接真正建立（HTTP 200 且流可读）时回调，用于复位重连退避计数 */
+  onOpen?: () => void;
   onError?: (err: unknown) => void;
 }
 
@@ -45,9 +54,6 @@ export function connectRelay(opts: ConnectRelayOptions): RelayClient {
   const qs = new URLSearchParams();
   qs.set('apikey', opts.apikey);
   if (opts.rooms.length) qs.set('rooms', opts.rooms.join(','));
-  if (opts.userId) qs.set('userId', opts.userId);
-  if (opts.nickname) qs.set('nickname', opts.nickname);
-  if (opts.guid) qs.set('guid', opts.guid);
 
   const ctrl = new AbortController();
   const url = `${base}/realtime?${qs.toString()}`;
@@ -65,6 +71,8 @@ export function connectRelay(opts: ConnectRelayOptions): RelayClient {
         opts.onError?.(new Error(`relay connect failed: ${resp.status}`));
         return;
       }
+      // 连上了才复位退避；否则重连间隔永远停在最大值
+      opts.onOpen?.();
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
@@ -117,7 +125,7 @@ function parseSSEFrame(frame: string): RelayEvent | null {
 export type SendBroadcast = (
   roomId: string,
   event: string,
-  payload: any
+  payload: RelayPayload
 ) => Promise<void> | void;
 
 export interface SendRelayOptions {
@@ -126,7 +134,7 @@ export interface SendRelayOptions {
   apikey: string;
   roomId: string;
   event: string;
-  payload: any;
+  payload: RelayPayload;
 }
 
 export async function sendRelay(opts: SendRelayOptions): Promise<void> {

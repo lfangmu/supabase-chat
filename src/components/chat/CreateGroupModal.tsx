@@ -124,6 +124,9 @@ const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
       <div
         className="w-full max-w-lg h-[85vh] sm:h-[70vh] bg-card rounded-t-2xl sm:rounded-2xl flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="创建群聊"
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">

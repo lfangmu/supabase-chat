@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { useRef, useState } from 'react';
-import { useReadReceipts, receiptHandlerRef } from '@/hooks/useReadReceipts';
+import { useReadReceipts, dispatchReceipt, clearReceiptHandlers } from '@/hooks/useReadReceipts';
 import type { Message } from '@/types';
 import type { SendBroadcast } from '@/lib/realtimeRelay';
+import { at } from '@/test-utils/at';
 
 /**
  * 已读回执回归测试。
@@ -42,8 +43,7 @@ let postCalls: { ids: string[] }[] = [];
 function installFetchMock() {
   getCalls = 0;
   postCalls = [];
-  global.fetch = vi.fn(async (input: unknown, init?: RequestInit) => {
-    const url = typeof input === 'string' ? input : String(input);
+  global.fetch = vi.fn(async (_input: unknown, init?: RequestInit) => {
     const method = (init?.method || 'GET').toUpperCase();
     if (method === 'POST') {
       const body = JSON.parse(String(init?.body || '{}'));
@@ -87,7 +87,7 @@ describe('useReadReceipts — 发送方「已读」状态', () => {
   });
 
   afterEach(() => {
-    receiptHandlerRef.current = null;
+    clearReceiptHandlers();
     vi.restoreAllMocks();
   });
 
@@ -156,7 +156,7 @@ describe('useReadReceipts — 发送方「已读」状态', () => {
 
     // 对方在房间内读完 → 广播 receipt
     await act(async () => {
-      receiptHandlerRef.current?.({ messageIds: ['m1', 'm2'] });
+      dispatchReceipt({ messageIds: ['m1', 'm2'] });
     });
     await flush();
 
@@ -173,7 +173,7 @@ describe('useReadReceipts — 发送方「已读」状态', () => {
     });
     await flush();
     await waitFor(() => expect(postCalls.length).toBe(1));
-    expect(postCalls[0].ids).toEqual(['m3']);
+    expect(at(postCalls, 0).ids).toEqual(['m3']);
 
     // 再触发一次渲染（内容不变）不应重复 POST
     await act(async () => {
@@ -209,7 +209,7 @@ describe('useReadReceipts — 发送方「已读」状态', () => {
       });
       await flush();
       await waitFor(() => expect(postCalls.length).toBe(1));
-      expect(postCalls[0].ids).toEqual(['m3']);
+      expect(at(postCalls, 0).ids).toEqual(['m3']);
     } finally {
       Object.defineProperty(document, 'visibilityState', {
         get: () => 'visible',

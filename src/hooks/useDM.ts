@@ -31,6 +31,7 @@ export function getDMOtherUser(roomId: string, currentUserId: string): string | 
   const parts = rest.split(':');
   if (parts.length !== 2) return null;
   const [a, b] = parts;
+  if (!a || !b) return null;
   const user = currentUserId.trim();
   if (user === a) return b;
   if (user === b) return a;
@@ -51,12 +52,21 @@ export function useDM({ currentUserId, onSwitchRoom }: UseDMParams) {
     if (!uid) return;
 
     try {
-      const params = new URLSearchParams({ user: uid });
-      const res = await fetch(`${API_CONFIG.DM_LIST_ENDPOINT}?${params}`);
-      const data = await res.json();
-      if (data.success && data.rooms) {
-        setDmRooms(data.rooms as DMRoom[]);
+      // P2-10：服务端已支持游标分页（每页 200，返回 hasMore/nextCursor）。
+      // 这里循环取全，避免私聊超过一页时静默丢失（页数上限兜底，防异常循环）。
+      const all: DMRoom[] = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < 10; page += 1) {
+        const params = new URLSearchParams({ user: uid });
+        if (cursor) params.set('before', cursor);
+        const res = await fetch(`${API_CONFIG.DM_LIST_ENDPOINT}?${params}`);
+        const data = await res.json();
+        if (!data.success || !Array.isArray(data.rooms)) break;
+        all.push(...(data.rooms as DMRoom[]));
+        if (!data.hasMore || !data.nextCursor) break;
+        cursor = data.nextCursor as string;
       }
+      setDmRooms(all);
     } catch {
       // Non-fatal
     }

@@ -3,7 +3,6 @@ import {
   STORAGE_CONFIG,
   UPLOAD_CONFIG,
   MESSAGE_CONFIG,
-  AUTH_CONFIG,
   ROOM_CONFIG,
   DM_CONFIG,
   API_CONFIG,
@@ -56,15 +55,8 @@ describe('config', () => {
     });
   });
 
-  describe('AUTH_CONFIG', () => {
-    it('should have session cookie name', () => {
-      expect(AUTH_CONFIG.SESSION_COOKIE).toBeTruthy();
-    });
-
-    it('should have jwt expiry', () => {
-      expect(AUTH_CONFIG.JWT_EXPIRY).toBeGreaterThan(0);
-    });
-  });
+  // AUTH_CONFIG（SESSION_COOKIE / JWT_EXPIRY / PASSWORD_VERSION_INTERVAL）是自建 JWT
+  // 时代的遗留，Supabase Auth 迁移后 src/ 内 0 引用，已随 P3 死代码清理移除。
 
   describe('ROOM_CONFIG', () => {
     it('should have default room', () => {

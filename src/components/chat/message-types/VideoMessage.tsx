@@ -6,10 +6,9 @@ import { useSignedUrl } from '@/hooks/useSignedUrl';
 
 interface VideoMessageProps {
   message: Message;
-  isSelf: boolean;
 }
 
-const VideoMessage: React.FC<VideoMessageProps> = React.memo(({ message, isSelf }) => {
+const VideoMessage: React.FC<VideoMessageProps> = React.memo(({ message }) => {
   const resolvedUrl = useSignedUrl(message.content);
 
   if (!resolvedUrl) {

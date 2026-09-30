@@ -100,49 +100,10 @@ export interface VoiceMessage extends Message {
   content: string;
 }
 
-// 文件消息类型
-export interface FileMessageData extends Message {
-  type: 'file';
-  content: string;
-  file_name: string;
-  file_size: number;
-  file_mime: string;
-}
-
 // 上传进度项类型
 export interface UploadItem {
   progress: number;
   fileName: string;
-}
-
-// 聊天状态
-export interface ChatState {
-  user: string;
-  savedNickname: string | null;
-  showNicknameInput: boolean;
-  message: string;
-  messages: Message[];
-  roomId: string;
-  uploading: boolean;
-  uploadingMessages: Map<string, UploadItem>;
-  loadingMore: boolean;
-  hasMore: boolean;
-}
-
-// 认证状态（Supabase Auth 会话）
-export interface AuthState {
-  isAuthenticated: boolean;
-  userId: string | null;
-  email: string | null;
-  isAnonymous: boolean;
-}
-
-// 全局搜索过滤条件
-export interface GlobalSearchFilters {
-  sender?: string;
-  type?: string;
-  startDate?: string;
-  endDate?: string;
 }
 
 // 全局搜索结果项（包含房间信息）
@@ -208,9 +169,6 @@ export const isVideoMessage = (message: Message): message is VideoMessage =>
 
 export const isVoiceMessage = (message: Message): message is VoiceMessage =>
   message.type === 'voice';
-
-export const isFileMessage = (message: Message): message is FileMessageData =>
-  message.type === 'file';
 
 export const isUploadItem = (item: unknown): item is UploadItem =>
   typeof item === 'object' && item !== null &&

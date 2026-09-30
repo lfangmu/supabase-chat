@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { FriendsData, UserProfile } from '@/types';
+import { FriendsData } from '@/types';
 import { API_CONFIG } from '@/config';
 import { showSuccess } from '@/utils/errorHandler';
 

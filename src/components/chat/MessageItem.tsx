@@ -12,6 +12,7 @@ import ImageMessage from './message-types/ImageMessage';
 import VideoMessage from './message-types/VideoMessage';
 import VoiceMessage from './message-types/VoiceMessage';
 import FileMessage from './message-types/FileMessage';
+import { mediaPlaceholder } from '@/utils/labels';
 
 /** 微信撤回时限：2 分钟 */
 export const WITHDRAW_WINDOW_MS = 2 * 60 * 1000;
@@ -36,6 +37,8 @@ interface MessageItemProps {
   reactions?: Reaction[];
   /** 切换某条消息的某个 emoji 回应 */
   onToggleReaction?: (messageId: string, emoji: string) => void;
+  /** 点击头像：打开该用户的个人资料卡（微信式） */
+  onAvatarClick?: (info: { userId?: string; name: string }) => void;
   /** 全局搜索跳转后被高亮定位（短暂强调） */
   highlight?: boolean;
 }
@@ -54,10 +57,13 @@ const MessageItem: React.FC<MessageItemProps> = React.memo(({
   avatarUrl = null,
   reactions = [],
   onToggleReaction,
+  onAvatarClick,
   highlight = false,
 }) => {
   // 身份判定以 UUID 为准（展示名可被改，历史消息里存的是旧名）；缺 userId 的老数据才退回比展示名
-  const isSelf = currentUserId && message.userId ? message.userId === currentUserId : message.user === user;
+  const isSelf = !!(currentUserId && message.userId
+    ? message.userId === currentUserId
+    : message.user === user);
   // 微信式：私聊不重复展示对方昵称与每条时间（群聊保留昵称）
   const showName = !isDM;
   const isFailed = message.sendStatus === 'failed';
@@ -116,7 +122,7 @@ const MessageItem: React.FC<MessageItemProps> = React.memo(({
     setIsEditing(false);
   };
 
-  const handleLongPress = useCallback((e: React.MouseEvent | React.TouchEvent | MouseEvent | TouchEvent) => {
+  const handleLongPress = useCallback(() => {
     if (messageRef.current) {
       const rect = messageRef.current.getBoundingClientRect();
       let menuX = rect.left + rect.width / 2;
@@ -206,7 +212,7 @@ const MessageItem: React.FC<MessageItemProps> = React.memo(({
         <div className="text-xs text-foreground/70 truncate">
           {message.quote.type === 'text'
             ? message.quote.content
-            : `[${message.quote.type === 'image' ? '图片' : message.quote.type === 'video' ? '视频' : message.quote.type === 'file' ? '文件' : '语音'}]`}
+            : mediaPlaceholder(message.quote.type)}
         </div>
       </div>
     );
@@ -215,9 +221,9 @@ const MessageItem: React.FC<MessageItemProps> = React.memo(({
   const renderMessageContent = () => {
     switch (message.type) {
       case 'image':
-        return <ImageMessage message={message} isSelf={isSelf} />;
+        return <ImageMessage message={message} />;
       case 'video':
-        return <VideoMessage message={message} isSelf={isSelf} />;
+        return <VideoMessage message={message} />;
       case 'voice':
         return <VoiceMessage message={message} isSelf={isSelf} />;
       case 'file':
@@ -232,8 +238,18 @@ const MessageItem: React.FC<MessageItemProps> = React.memo(({
   return (
     <div className={`flex ${isSelf ? 'justify-end' : 'justify-start'} animate-fadeIn mb-2`}>
       <div className={`flex ${isSelf ? 'flex-row-reverse' : 'flex-row'} items-end gap-2`}>
-        {/* Avatar */}
-        <Avatar name={message.user} avatar={avatarUrl} size={36} className="ring-1 ring-border" />
+        {/* Avatar（点击打开个人资料卡） */}
+        <Avatar
+          name={message.user}
+          avatar={avatarUrl}
+          size={36}
+          className="ring-1 ring-border"
+          onClick={
+            onAvatarClick
+              ? () => onAvatarClick({ userId: message.userId, name: message.user })
+              : undefined
+          }
+        />
 
         {/* Message content */}
         <div className={`flex flex-col gap-1 ${isFailed ? 'opacity-60' : ''}`} style={{ maxWidth: '70%', width: '100%' }}>
@@ -298,11 +314,11 @@ const MessageItem: React.FC<MessageItemProps> = React.memo(({
               style={{ wordBreak: 'break-all', overflowWrap: 'break-word', whiteSpace: 'normal', width: '100%' }}
               onContextMenu={(e) => {
                 e.preventDefault();
-                handleLongPress(e);
+                handleLongPress();
               }}
-              onMouseDown={(e) => {
+              onMouseDown={() => {
                 clearLongPressTimer();
-                longPressTimerRef.current = setTimeout(() => handleLongPress(e), 500);
+                longPressTimerRef.current = setTimeout(() => handleLongPress(), 500);
                 const clear = () => {
                   clearLongPressTimer();
                   document.removeEventListener('mouseup', clear);
@@ -311,9 +327,9 @@ const MessageItem: React.FC<MessageItemProps> = React.memo(({
                 document.addEventListener('mouseup', clear, { once: true });
                 document.addEventListener('mouseleave', clear, { once: true });
               }}
-              onTouchStart={(e) => {
+              onTouchStart={() => {
                 clearLongPressTimer();
-                longPressTimerRef.current = setTimeout(() => handleLongPress(e), 500);
+                longPressTimerRef.current = setTimeout(() => handleLongPress(), 500);
                 const clear = () => {
                   clearLongPressTimer();
                   document.removeEventListener('touchend', clear);
@@ -323,20 +339,18 @@ const MessageItem: React.FC<MessageItemProps> = React.memo(({
             >
               {renderQuote()}
               {renderMessageContent()}
-              {/* REQ-001: 添加表情回应弹层 */}
+              {/* REQ-001: 添加表情回应弹层（portal 到 body，脱离 overflow:hidden 裁剪，避免「表情包只显示一半」） */}
               {showEmojiPicker && (
-                <div
-                  className="absolute z-50 mt-1"
-                  style={{ top: '100%', [isSelf ? 'right' : 'left']: 0 } as React.CSSProperties}
-                >
-                  <EmojiPicker
-                    onSelect={(emoji) => {
-                      onToggleReaction?.(message.id, emoji);
-                      setShowEmojiPicker(false);
-                    }}
-                    onClose={() => setShowEmojiPicker(false)}
-                  />
-                </div>
+                <EmojiPicker
+                  anchorRef={messageRef}
+                  align={isSelf ? 'right' : 'left'}
+                  placement="bottom"
+                  onSelect={(emoji) => {
+                    onToggleReaction?.(message.id, emoji);
+                    setShowEmojiPicker(false);
+                  }}
+                  onClose={() => setShowEmojiPicker(false)}
+                />
               )}
             </div>
           )}
@@ -376,8 +390,13 @@ const MessageItem: React.FC<MessageItemProps> = React.memo(({
           {/* 私聊已读回执：仅自己发出的、已送达且被对方读过的消息展示 */}
           {isDM && isSelf && !isFailed && message.sendStatus !== 'sending' && (
             <span
-              className={`self-end text-[10px] leading-none ${
-                message.readByOther ? 'text-muted-foreground' : 'text-primary/70'
+              // 排版要点（原先气泡右下角与头像左下角把这个 10px 小标签夹成一个「角」，
+              // 视觉上像是压在气泡圆角上）：
+              //   * mr-1  —— 相对气泡右边缘内缩 4px，避开 rounded-2xl 的圆角；
+              //   * mt-0.5 —— 与 gap-1 叠加成 6px，和气泡拉开一档；
+              //   * leading-tight —— leading-none(10px) 会把中文字形上下切掉，1.25 行高更稳。
+              className={`self-end mr-1 mt-0.5 text-[10px] leading-tight ${
+                message.readByOther ? 'text-muted-foreground' : 'text-primary'
               }`}
             >
               {message.readByOther ? '已读' : '未读'}

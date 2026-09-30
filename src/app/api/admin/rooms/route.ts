@@ -1,6 +1,6 @@
 ﻿import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
-import { getAuthUser } from '@/lib/auth-user';
+import { requireAdmin } from '@/lib/admin-auth';
 import { logAdminAction, getClientIpFromRequest } from '@/lib/audit';
 
 export const runtime = 'edge';
@@ -9,18 +9,15 @@ export const runtime = 'edge';
 /**
  * GET /api/admin/rooms — 管理后台：返回全部（非 DM）房间及其最新消息摘要。
  *
- * 鉴权：middleware 已确保调用者为 users.role='admin'。这里再解析 actor 兜底校验一次。
+ * 鉴权（P1-3）：middleware 已做一道 role='admin' 校验；此处用 requireAdmin **再独立校验一次**，
+ * 不再只解析 actor。任一环节被绕过（matcher 调整 / middleware 回归 / 路由被直接调用），
+ * 非管理员仍会拿到 403。
  * 只读，不做任何成员过滤。
  */
 export async function GET(request: NextRequest) {
   try {
-    const actor = await getAuthUser(request);
-    if (!actor) {
-      return NextResponse.json(
-        { success: false, message: '未认证的管理员会话' },
-        { status: 401 }
-      );
-    }
+    const auth = await requireAdmin(request);
+    if (!auth.ok) return auth.response;
 
     const supabase = getServiceClient();
 
@@ -80,15 +77,13 @@ export async function GET(request: NextRequest) {
 /**
  * DELETE /api/admin/rooms — 管理后台：删除指定群聊及其全部消息。
  *
- * 鉴权：middleware 已确保调用者为 admin。这里再解析 actor 兜底校验一次。
- * 数据安全：先用 service_role 删除该房间所有消息，再删房间本身；禁止删除系统保留的默认聊天室。
+ * 鉴权（P1-3）：requireAdmin 路由内独立校验 role='admin'（不再只解析 actor）。
+ * 数据安全：先用 service_role 删除该房间所有消息与成员行，再删房间本身；禁止删除系统保留的默认聊天室。
  */
 export async function DELETE(request: NextRequest) {
   try {
-    const actor = await getAuthUser(request);
-    if (!actor) {
-      return NextResponse.json({ success: false, message: '未认证的管理员会话' }, { status: 401 });
-    }
+    const auth = await requireAdmin(request);
+    if (!auth.ok) return auth.response;
 
     const body = await request.json().catch(() => ({}));
     const id = body?.id;
@@ -123,6 +118,16 @@ export async function DELETE(request: NextRequest) {
       .eq('room_id', id);
     if (msgError) {
       console.error('Admin delete messages failed:', msgError);
+    }
+
+    // P2-13：级联清理成员行，避免 `room_members` 留下孤儿行 →
+    // `/api/rooms/mine` 仍会列出已删除的房间，前端反复把幽灵房间加回侧栏。
+    const { error: memberDelError } = await supabase
+      .from('room_members')
+      .delete()
+      .eq('room_id', id);
+    if (memberDelError) {
+      console.error('Admin delete room_members failed:', memberDelError);
     }
 
     const { error } = await supabase

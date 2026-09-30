@@ -6,6 +6,10 @@ const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四
 
 /** Format a date for separator display: 今天/昨天/X月X日 星期X/YYYY年X月X日 星期X */
 export function formatDateSeparator(date: Date): string {
+  // 无效日期（Invalid Date，常见于 timestamp 缺失/非字符串）直接返回空串，
+  // 绝不能渲染出「NaN年NaN月NaN日 undefined」这种脏字符串。
+  if (!date || Number.isNaN(date.getTime())) return '';
+
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const target = new Date(date.getFullYear(), date.getMonth(), date.getDate());
@@ -46,6 +50,8 @@ export function formatClock(date: Date): string {
 /** Get a date key (YYYY-MM-DD) from a timestamp for separator deduplication */
 export function getDateKey(timestamp: string): string {
   const date = new Date(timestamp);
+  // 无效时间戳返回空串：让 buildVirtualList 跳过该分隔线，而不是产出 "NaN-NaN-NaN"。
+  if (Number.isNaN(date.getTime())) return '';
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');

@@ -11,6 +11,7 @@ vi.mock('sonner', () => ({
 }));
 
 import CreateGroupModal from '@/components/chat/CreateGroupModal';
+import { at } from '@/test-utils/at';
 
 const ME = '11111111-1111-1111-1111-111111111111';
 const A = '22222222-2222-2222-2222-222222222222';
@@ -64,7 +65,7 @@ describe('CreateGroupModal 默认群名', () => {
     fireEvent.click(screen.getByText(/^创建群聊/));
 
     await waitFor(() => expect(createGroup).toHaveBeenCalledTimes(1));
-    const [name, owner, members] = createGroup.mock.calls[0];
+    const [name, owner, members] = at(createGroup.mock.calls, 0);
     expect(name).toBe('我、哈哈1、小明');
     expect(name).not.toMatch(UUID_RE);
     expect(owner).toBe(ME);
@@ -88,7 +89,7 @@ describe('CreateGroupModal 默认群名', () => {
     fireEvent.click(screen.getByText(/^创建群聊/));
 
     await waitFor(() => expect(createGroup).toHaveBeenCalledTimes(1));
-    const name = createGroup.mock.calls[0][0] as string;
+    const name = at(createGroup.mock.calls, 0)[0] as string;
     expect(name.length).toBeLessThanOrEqual(50);
     expect(name).not.toMatch(UUID_RE);
   });
@@ -102,7 +103,7 @@ describe('CreateGroupModal 默认群名', () => {
     fireEvent.click(screen.getByText(/^创建群聊/));
 
     await waitFor(() => expect(createGroup).toHaveBeenCalledTimes(1));
-    expect(createGroup.mock.calls[0][0]).toBe('我、哈哈1、小明等');
+    expect(at(createGroup.mock.calls, 0)[0]).toBe('我、哈哈1、小明等');
   });
 
   it('展示名全都解析不到时兜底为「群聊」，绝不提交空名（空名会被服务端 400 拒绝）', async () => {
@@ -130,6 +131,6 @@ describe('CreateGroupModal 默认群名', () => {
     fireEvent.click(screen.getByText(/^创建群聊/));
 
     await waitFor(() => expect(createGroup).toHaveBeenCalledTimes(1));
-    expect(createGroup.mock.calls[0][0]).toBe('我的专属群');
+    expect(at(createGroup.mock.calls, 0)[0]).toBe('我的专属群');
   });
 });

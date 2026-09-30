@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { safeSetCache } from '@/utils/cacheUtils';
 import { Message } from '@/types';
-import { STORAGE_CONFIG_KEYS, MESSAGE_CONFIG } from '@/config';
+import { MESSAGE_CONFIG } from '@/config';
 
 describe('safeSetCache', () => {
   const testKey = 'test_cache_key';

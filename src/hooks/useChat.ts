@@ -9,7 +9,7 @@ import { useDraft } from './useDraft';
 import { useDM, getDMOtherUser, generateDMRoomId } from './useDM';
 import { Message, Room } from '@/types';
 import { showError, showSuccess } from '@/utils/errorHandler';
-import { requestNotificationPermission, removeMentionedRoom, getMentionedRooms, notifyNewMessage, isMentioned, addMentionedRoom, notifyMention } from '@/utils/notifications';
+import { removeMentionedRoom, getMentionedRooms, notifyNewMessage, isMentioned, addMentionedRoom, notifyMention } from '@/utils/notifications';
 import { generateId } from '@/utils/id';
 import { getJoinedRooms, addJoinedRoom, removeJoinedRoom, getHiddenRooms, addHiddenRoom, removeHiddenRoom, getPinnedRooms, togglePinnedRoom, getServerRooms, setServerRooms, getLastRoom, setLastRoom } from '@/utils/joinedRooms';
 import { ROOM_CONFIG, API_CONFIG, DM_CONFIG } from '@/config';
@@ -43,7 +43,6 @@ export const useChat = (isChatView = true, initialUser: CurrentUser | null = nul
   const userId = currentUser?.userId ?? '';
   const displayName = currentUser?.displayName ?? '';
   const user = displayName; // 向后兼容：组件渲染层仍用展示名
-  const ready = !!currentUser && !!user;
   const [message, setMessage] = useState('');
   // 上次打开的房间在挂载后（hydration 完成）从 localStorage 还原，避免 SSR 水合不一致。
   const [roomId, setRoomId] = useState(ROOM_CONFIG.DEFAULT_ROOM);
@@ -62,6 +61,10 @@ export const useChat = (isChatView = true, initialUser: CurrentUser | null = nul
   });
 
   // "隐藏"房间集合（仅自己列表不可见，对方仍可见）——私聊删除语义
+  //
+  // P3：`hiddenRoomsRef` 必须**先声明再使用**。此前它声明在第 80 行、却在下面这个
+  // effect 里就被引用（运行时因 effect 在渲染后执行而安全，但极易误读为 TDZ bug）。
+  const hiddenRoomsRef = useRef<Set<string>>(new Set());
   const [hiddenRooms, setHiddenRooms] = useState<Set<string>>(() => new Set(getHiddenRooms()));
   useEffect(() => { hiddenRoomsRef.current = hiddenRooms; }, [hiddenRooms]);
 
@@ -77,7 +80,6 @@ export const useChat = (isChatView = true, initialUser: CurrentUser | null = nul
   useEffect(() => { roomIdRef.current = roomId; }, [roomId]);
   const fetchRoomsRef = useRef<() => void>(() => {});
   const loadDMsRef = useRef<() => void>(() => {});
-  const hiddenRoomsRef = useRef<Set<string>>(new Set());
   // 「上次打开的房间」是否已完成还原（门闩，见下方持久化/还原两个 effect 的注释）
   const restoredLastRoomRef = useRef(false);
 
@@ -200,6 +202,7 @@ export const useChat = (isChatView = true, initialUser: CurrentUser | null = nul
           // 只把最新一条交给外部消息处理器（通知 + 未读 +1 + 列表刷新），
           // 避免多条消息引发重复通知；打开房间后会拉取完整历史。
           const newest = msgs[msgs.length - 1];
+          if (!newest) return;
           handleExternalMessage(roomId, newest);
         })
         .catch(() => {});
@@ -320,7 +323,7 @@ export const useChat = (isChatView = true, initialUser: CurrentUser | null = nul
     },
   });
 
-  const { uploading, uploadingMessages, handleFileChange, handleVoiceUpload } =
+  const { uploading, uploadingMessages, handleFileChange, handleVoiceUpload, uploadFile } =
     useFileUpload({ user: displayName, userId, roomId, sendMessage });
 
   // Online presence (per-room, used for "X 人在线" header in group chats)
@@ -340,6 +343,7 @@ export const useChat = (isChatView = true, initialUser: CurrentUser | null = nul
     const users: { id: string; nickname: string; online_at: string }[] = [];
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
+      if (!m) continue;
       const mId = m.userId || m.user;
       if (!seen.has(mId) && m.userId !== userId) {
         seen.add(mId);
@@ -454,20 +458,33 @@ export const useChat = (isChatView = true, initialUser: CurrentUser | null = nul
         setRooms([]);
         return;
       }
-      const res = await fetch(
-        `/api/rooms?ids=${encodeURIComponent(joined.join(','))}`,
-        { signal: controller.signal }
-      );
+      // 服务端 `?ids=` 有数量上限（见 api/rooms/route.ts MAX_ROOM_IDS），
+      // 已加入房间过多时分片请求再合并，避免一次性 400 导致整个列表变空。
+      const CHUNK = 200;
+      const chunks: string[][] = [];
+      for (let i = 0; i < joined.length; i += CHUNK) {
+        chunks.push(joined.slice(i, i + CHUNK));
+      }
 
-      // JWT expired — notify user instead of silently failing
-      if (res.status === 401) {
-        showError('登录已过期，请刷新页面重新登录');
-        return;
+      const collected: Room[] = [];
+      for (const chunk of chunks) {
+        const res = await fetch(
+          `/api/rooms?ids=${encodeURIComponent(chunk.join(','))}`,
+          { signal: controller.signal }
+        );
+
+        // JWT expired — notify user instead of silently failing
+        if (res.status === 401) {
+          showError('登录已过期，请刷新页面重新登录');
+          return;
+        }
+        if (!res.ok) continue;
+        const data = await res.json();
+        if (data.success && Array.isArray(data.rooms)) {
+          collected.push(...(data.rooms as Room[]));
+        }
       }
-      const data = await res.json();
-      if (data.success && data.rooms) {
-        setRooms(data.rooms);
-      }
+      setRooms(collected);
     } catch {
       // Silently ignore (including AbortError)
     } finally {
@@ -815,7 +832,18 @@ export const useChat = (isChatView = true, initialUser: CurrentUser | null = nul
       if (room.id === roomId) continue; // current room is always "read"
       if (!room.last_message_at) continue;
       const lastSeen = lastSeenTimestamps[room.id];
-      if (!lastSeen || room.last_message_at > lastSeen) {
+      if (!lastSeen) {
+        ids.add(room.id);
+        continue;
+      }
+      // P3 修复：此前是 `room.last_message_at > lastSeen` —— **字典序**比较两个
+      // 格式不同的 ISO 字符串：DB 返回 `2026-09-28T12:00:00.123456+00:00`，
+      // 本地 `toISOString()` 是 `2026-09-28T12:00:00.123Z`。
+      // `'+'`(0x2B) < `'Z'`(0x5A)，同一毫秒下会判成「有未读」；反过来也会误判。
+      // 改为解析成时间戳比较，并对不可解析值保守地视为「有未读」。
+      const msgAt = Date.parse(room.last_message_at);
+      const seenAt = Date.parse(lastSeen);
+      if (!Number.isFinite(msgAt) || !Number.isFinite(seenAt) || msgAt > seenAt) {
         ids.add(room.id);
       }
     }
@@ -868,6 +896,7 @@ export const useChat = (isChatView = true, initialUser: CurrentUser | null = nul
     handleSendText,
     handleFileChange,
     handleVoiceUpload,
+    uploadFile,
     loadMoreHistory,
     refreshMessages,
     retryMessage,

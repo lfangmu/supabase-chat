@@ -1,11 +1,38 @@
 // Lightweight notification system: sound + browser notification
 // Uses Web Audio API to generate a short beep (no external audio files)
 
-/** Play a short notification beep — creates and releases AudioContext each call */
+/**
+ * 复用的 AudioContext 单例（P3 修复）。
+ *
+ * 此前每次响铃都 `new AudioContext()`，播完再 `close()`。浏览器对**同时存在的**
+ * AudioContext 数量有硬上限（Chrome 约 6 个），短时间内连收多条消息时，
+ * 「新建 → 关闭」的竞态会让后续若干次响铃直接抛错（被 catch 静默吞掉 → 没声音）。
+ * 现在复用同一个 context，只重建振荡器节点，并在结束后断开，避免节点累积。
+ */
+import { STORAGE_CONFIG_KEYS } from '@/config';
+
+let sharedAudioContext: AudioContext | null = null;
+
+function getAudioContext(): AudioContext | null {
+  if (typeof window === 'undefined') return null;
+  const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!Ctor) return null;
+  if (!sharedAudioContext || sharedAudioContext.state === 'closed') {
+    try {
+      sharedAudioContext = new Ctor();
+    } catch {
+      return null;
+    }
+  }
+  return sharedAudioContext;
+}
+
+/** Play a short notification beep — reuses a single module-level AudioContext. */
 export function playNotificationSound() {
   try {
-    const ctx = new AudioContext();
-    if (ctx.state === 'suspended') ctx.resume();
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') void ctx.resume().catch(() => { /* ignore */ });
 
     const oscillator = ctx.createOscillator();
     const gain = ctx.createGain();
@@ -22,9 +49,14 @@ export function playNotificationSound() {
     oscillator.start(ctx.currentTime);
     oscillator.stop(ctx.currentTime + 0.3);
 
-    // Release AudioContext after playback
+    // 播放结束后断开节点，避免长会话中节点持续累积（context 本身保留复用）
     oscillator.addEventListener('ended', () => {
-      ctx.close().catch(() => { /* ignore */ });
+      try {
+        oscillator.disconnect();
+        gain.disconnect();
+      } catch {
+        /* ignore */
+      }
     });
   } catch {
     // Audio not available, silently fail
@@ -137,11 +169,11 @@ export function isMentioned(content: string, nickname: string): boolean {
 /** Add a room to the mentioned rooms list in localStorage */
 export function addMentionedRoom(roomId: string): void {
   try {
-    const raw = localStorage.getItem('chat_mentioned_rooms');
+    const raw = localStorage.getItem(STORAGE_CONFIG_KEYS.MENTIONED_ROOMS_KEY);
     const rooms: string[] = raw ? JSON.parse(raw) : [];
     if (!rooms.includes(roomId)) {
       rooms.push(roomId);
-      localStorage.setItem('chat_mentioned_rooms', JSON.stringify(rooms));
+      localStorage.setItem(STORAGE_CONFIG_KEYS.MENTIONED_ROOMS_KEY, JSON.stringify(rooms));
     }
   } catch {
     // ignore
@@ -151,10 +183,10 @@ export function addMentionedRoom(roomId: string): void {
 /** Remove a room from the mentioned rooms list (when user views the room) */
 export function removeMentionedRoom(roomId: string): void {
   try {
-    const raw = localStorage.getItem('chat_mentioned_rooms');
+    const raw = localStorage.getItem(STORAGE_CONFIG_KEYS.MENTIONED_ROOMS_KEY);
     const rooms: string[] = raw ? JSON.parse(raw) : [];
     const filtered = rooms.filter((r) => r !== roomId);
-    localStorage.setItem('chat_mentioned_rooms', JSON.stringify(filtered));
+    localStorage.setItem(STORAGE_CONFIG_KEYS.MENTIONED_ROOMS_KEY, JSON.stringify(filtered));
   } catch {
     // ignore
   }
@@ -163,7 +195,7 @@ export function removeMentionedRoom(roomId: string): void {
 /** Get the set of mentioned room IDs */
 export function getMentionedRooms(): Set<string> {
   try {
-    const raw = localStorage.getItem('chat_mentioned_rooms');
+    const raw = localStorage.getItem(STORAGE_CONFIG_KEYS.MENTIONED_ROOMS_KEY);
     const rooms: string[] = raw ? JSON.parse(raw) : [];
     return new Set(rooms);
   } catch {

@@ -2,6 +2,7 @@ import { createElement } from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import ContactsPage from '@/components/chat/ContactsPage';
+import { at } from '@/test-utils/at';
 
 const A = '22222222-2222-2222-2222-222222222222';
 const B = '33333333-3333-3333-3333-333333333333';
@@ -64,7 +65,7 @@ describe('ContactsPage 删除好友入口', () => {
 
     fireEvent.click(screen.getByLabelText('更多操作：小明'));
     fireEvent.click(screen.getByText('删除好友'));
-    fireEvent.click(screen.getAllByText('取消')[0]);
+    fireEvent.click(at(screen.getAllByText('取消'), 0));
 
     expect(onRemoveFriend).not.toHaveBeenCalled();
   });

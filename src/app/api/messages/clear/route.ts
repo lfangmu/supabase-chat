@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
 import { getAuthUser } from '@/lib/auth-user';
 import { isRoomParticipant } from '@/lib/rooms';
+import { isValidRoomId } from '@/lib/validate';
 
 export const runtime = 'edge';
 
@@ -30,7 +31,7 @@ export async function POST(request: NextRequest) {
     if (!roomId) {
       return NextResponse.json({ success: false, message: '缺少房间 ID' }, { status: 400 });
     }
-    if (!/^[a-zA-Z0-9一-龥_:-]+$/.test(roomId) || roomId.length > 200) {
+    if (!isValidRoomId(roomId)) {
       return NextResponse.json({ success: false, message: '无效的房间 ID' }, { status: 400 });
     }
 

@@ -32,7 +32,10 @@ export async function POST(request: NextRequest) {
     }
 
     // 只能为「自己所在房间」的文件生成签名 URL（防越权访问他人房间文件）
-    const roomId = path.split('/')[0];
+    const roomId = path.split('/')[0] ?? '';
+    if (!roomId) {
+      return NextResponse.json({ success: false, message: '无效的路径格式' }, { status: 400 });
+    }
     const supabaseForCheck = getServiceClient();
     if (!(await isRoomParticipant(roomId, actor, supabaseForCheck))) {
       return NextResponse.json(

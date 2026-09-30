@@ -51,7 +51,7 @@ function formatTime(ts?: string | null): string {
   if (diff < oneDay * 2) return '昨天';
   if (diff < oneDay * 7) {
     const days = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-    return days[date.getDay()];
+    return days[date.getDay()] ?? '';
   }
   return `${date.getMonth() + 1}/${date.getDate()}`;
 }
@@ -83,6 +83,18 @@ const ChatListPage: React.FC<ChatListPageProps> = React.memo(({
   const [pinMenuRoomId, setPinMenuRoomId] = useState<string | null>(null);
   const pressTimerRef = useRef<number | null>(null);
   const longPressFiredRef = useRef(false);
+
+  // P3：组件卸载时清理长按计时器 —— 此前只在 touch/pointer 事件的 up/cancel 分支里清，
+  // 若用户在长按进行中切走页面（组件卸载），计时器仍会在卸载后触发 setPinMenuRoomId。
+  useEffect(
+    () => () => {
+      if (pressTimerRef.current) {
+        clearTimeout(pressTimerRef.current);
+        pressTimerRef.current = null;
+      }
+    },
+    []
+  );
 
   // Close dropdown on outside click
   useEffect(() => {

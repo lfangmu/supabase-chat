@@ -35,6 +35,8 @@ interface ChatHeaderProps {
   onToggleSearch?: () => void;
   /** 搜索关键词变化 */
   onSearchChange?: (q: string) => void;
+  /** 点击私聊对方头像：打开个人资料卡 */
+  onOpenDmProfile?: () => void;
 }
 
 const ChatHeader: React.FC<ChatHeaderProps> = React.memo(({
@@ -55,6 +57,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = React.memo(({
   searchQuery = '',
   onToggleSearch,
   onSearchChange,
+  onOpenDmProfile,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -113,7 +116,12 @@ const ChatHeader: React.FC<ChatHeaderProps> = React.memo(({
           </div>
         ) : isDM && dmOtherUser ? (
           <div className="flex items-center gap-2 min-w-0">
-            <Avatar name={dmOtherUser} avatar={dmOtherAvatar} size={32} />
+            <Avatar
+              name={dmOtherUser}
+              avatar={dmOtherAvatar}
+              size={32}
+              onClick={onOpenDmProfile}
+            />
             <div className="text-left min-w-0">
               <div className="text-[16px] font-semibold text-foreground truncate leading-tight">{dmOtherUser}</div>
               <div className="text-[11px] text-muted-foreground leading-tight">

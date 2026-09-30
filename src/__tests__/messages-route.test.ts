@@ -8,14 +8,17 @@ describe('POST /api/messages 转发字段', () => {
     vi.resetAllMocks();
   });
 
-  it('把 forwarded_from 透传到数据库 insert', async () => {
-    let insertPayload: any = null;
+  it('把 forwarded_from 透传到数据库，并以 id 为冲突键做幂等 upsert', async () => {
+    let upsertPayload: any = null;
+    let upsertOptions: any = null;
 
     const chain: any = {};
     const methods = ['select', 'eq', 'order', 'limit', 'in', 'is', 'ilike', 'gte', 'lte', 'or', 'like', 'neq', 'update'];
     for (const m of methods) chain[m] = vi.fn(() => chain);
-    chain.insert = vi.fn((rows: any[]) => {
-      insertPayload = rows[0];
+    // 幂等写入走 upsert（insert 的 options 里不支持 onConflict/ignoreDuplicates）。
+    chain.upsert = vi.fn((rows: any[], options: any) => {
+      upsertPayload = rows[0];
+      upsertOptions = options;
       return { then: (r: (v: any) => void) => Promise.resolve({ error: null }).then(r) };
     });
     chain.then = (r: (v: any) => void) => Promise.resolve({ data: null, error: null }).then(r);
@@ -50,7 +53,9 @@ describe('POST /api/messages 转发字段', () => {
 
     expect(res.status).toBe(200);
     expect(json.success).toBe(true);
-    expect(insertPayload).not.toBeNull();
-    expect(insertPayload.forwarded_from).toBe('src-msg-id');
+    expect(upsertPayload).not.toBeNull();
+    expect(upsertPayload.forwarded_from).toBe('src-msg-id');
+    // 幂等语义必须真的落到请求上：重发撞主键时应被忽略，而不是报 23505。
+    expect(upsertOptions).toEqual({ onConflict: 'id', ignoreDuplicates: true });
   });
 });

@@ -1,14 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
 import { getAuthUser } from '@/lib/auth-user';
-import { isRoomParticipant } from '@/lib/rooms';
+import { isValidUuid, escapeLikePattern as escapeLike } from '@/lib/validate';
 
 export const runtime = 'edge';
-
-// 转义 LIKE/ILIKE 通配符（% 与 _），避免用户输入被当成通配
-function escapeLike(v: string): string {
-  return v.replace(/[\\%_]/g, '\\$&');
-}
 
 // 日期筛选：仅传 YYYY-MM-DD 时补成当天起止，保证区间包含整天
 function normalizeDate(v: string, endOfDay: boolean): string {
@@ -33,6 +28,12 @@ export async function GET(request: NextRequest) {
     if (!actor) {
       return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
     }
+    // 防御纵深（P3）：actor 应当总是服务端从 token 解出的 UUID，但下面会把它
+    // **字符串拼接**进 PostgREST 的 `.or()` 过滤器表达式。若将来 getAuthUser 的
+    // 实现被改动而混入用户可控内容，逗号 / 括号即可越出过滤值。这里显式断言 UUID。
+    if (!isValidUuid(actor)) {
+      return NextResponse.json({ success: false, message: '身份无效' }, { status: 401 });
+    }
 
     const { searchParams } = new URL(request.url);
     const q = (searchParams.get('q') || '').trim();
@@ -40,7 +41,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: false, message: '搜索词需 1-100 个字符' }, { status: 400 });
     }
     const limitRaw = parseInt(searchParams.get('limit') || '50', 10);
-    const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : 50, 100), 100);
+    // P2-1：原写法 `Math.min(Math.max(x, 100), 100)` **恒为 100**，`limit` 参数完全失效。
+    // 正确语义：下界 1、上界 100、默认 50。
+    const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : 50, 1), 100);
 
     // 可选过滤项
     const typeParam = (searchParams.get('type') || 'all').trim();

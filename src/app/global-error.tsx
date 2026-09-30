@@ -38,6 +38,11 @@ export default function GlobalError({
             <p style={{ color: '#6b7280', fontSize: '0.875rem', marginBottom: '1.5rem' }}>
               发生了严重错误，请刷新页面重试。
             </p>
+            {error.digest && (
+              <p style={{ color: '#9ca3af', fontSize: '0.75rem', marginBottom: '1rem' }}>
+                错误编号：{error.digest}
+              </p>
+            )}
             <button
               onClick={reset}
               style={{

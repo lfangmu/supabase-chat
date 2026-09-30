@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabase';
 import type { Room, Message } from '@/types';
 import { Loader2, LogOut, ShieldCheck, Hash, MessageSquare, ChevronLeft, Trash2, AlertTriangle, Check, RefreshCw, Palette } from 'lucide-react';
 import { useBrandTheme } from '@/hooks/useBrandTheme';
+import { mediaTypeLabel } from '@/utils/labels';
 
 const DEFAULT_ROOM_ID = 'default-room';
 
@@ -868,7 +869,7 @@ function summarize(room: Room): string {
   if (!room.last_message_at) return '暂无消息';
   const t = room.last_message_type;
   if (t && t !== 'text') {
-    const label = t === 'image' ? '图片' : t === 'video' ? '视频' : t === 'voice' ? '语音' : '文件';
+    const label = mediaTypeLabel(t);
     return `${room.last_message_user || ''}: [${label}]`;
   }
   return `${room.last_message_user || ''}: ${room.last_message_content || ''}`;
@@ -876,7 +877,7 @@ function summarize(room: Room): string {
 
 function renderContent(m: Message): React.ReactNode {
   if (m.type === 'text') return m.content;
-  const label = m.type === 'image' ? '图片' : m.type === 'video' ? '视频' : m.type === 'voice' ? '语音' : '文件';
+  const label = mediaTypeLabel(m.type);
   const href = m.content?.startsWith('http') ? m.content : undefined;
   return (
     <span className="inline-flex items-center gap-1.5">

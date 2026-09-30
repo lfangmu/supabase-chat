@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
 import { getAuthUser } from '@/lib/auth-user';
+import { escapeLikePattern } from '@/lib/validate';
 
 export const runtime = 'edge';
 
@@ -22,6 +23,13 @@ export interface UserProfile {
  */
 export async function GET(request: NextRequest) {
   try {
+    // 防御纵深（P3）：middleware 已对 /api/* 做会话门禁，这里再显式校验一次身份，
+    // 避免将来 middleware matcher / PUBLIC_API_ROUTES 被改动后本接口「裸奔」。
+    const actor = await getAuthUser(request);
+    if (!actor) {
+      return NextResponse.json({ success: false, message: '未登录' }, { status: 401 });
+    }
+
     const { searchParams } = new URL(request.url);
     const q = searchParams.get('q')?.trim();
     const user = searchParams.get('user')?.trim();
@@ -73,7 +81,8 @@ export async function GET(request: NextRequest) {
     const { data, error } = await supabase
       .from('users')
       .select('id, display_name, avatar, signature, created_at, last_active_at')
-      .ilike('display_name', `%${q}%`)
+      // 转义用户输入里的 % / _，避免被当成 ILIKE 通配符（否则搜 `_` 等于拉全表）
+      .ilike('display_name', `%${escapeLikePattern(q)}%`)
       .order('last_active_at', { ascending: false, nullsFirst: false })
       .limit(20);
 

@@ -3,6 +3,7 @@
 import React, { useState, useCallback } from 'react';
 import { UserPlus, Clock, X, ChevronRight, Users, MoreHorizontal, Trash2, Loader2, MessageCircle } from 'lucide-react';
 import Avatar from './Avatar';
+import { formatRelativeTime } from '@/utils/labels';
 
 interface FriendItem {
   /** 用户 UUID（身份） */
@@ -41,15 +42,9 @@ interface ContactsPageProps {
   groupCount?: number;
 }
 
+// P3：相对时间格式化改为调用共享实现（此前与 AddFriendModal 各抄一份）
 function formatTime(ts: string): string {
-  const d = new Date(ts);
-  const diff = Date.now() - d.getTime();
-  const m = Math.floor(diff / 60000);
-  if (m < 1) return '刚刚';
-  if (m < 60) return `${m} 分钟前`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h} 小时前`;
-  return `${d.getMonth() + 1}/${d.getDate()}`;
+  return formatRelativeTime(ts);
 }
 
 const ContactsPage: React.FC<ContactsPageProps> = ({
@@ -95,7 +90,11 @@ const ContactsPage: React.FC<ContactsPageProps> = ({
       <div className="w-full max-w-lg max-h-[75vh] bg-card rounded-t-2xl sm:rounded-2xl flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
           <h2 className="text-base font-semibold text-foreground">新的朋友</h2>
-          <button onClick={() => setShowNewFriends(false)} className="p-1.5 rounded-lg hover:bg-muted transition-colors">
+          <button
+            onClick={() => setShowNewFriends(false)}
+            className="p-1.5 rounded-lg hover:bg-muted transition-colors"
+            aria-label="关闭新的朋友"
+          >
             <X className="w-5 h-5 text-muted-foreground" />
           </button>
         </div>

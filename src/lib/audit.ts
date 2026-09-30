@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
+import { getServiceClient } from './service-client';
 import { getClientIp } from './rate-limit';
 
 /**
@@ -26,7 +26,9 @@ export async function logAdminAction(
       return;
     }
 
-    const supabase = createClient(supabaseUrl, serviceRoleKey);
+    // P3：复用共享的 service client 单例，不再每次写审计都新建一个 client
+    // （此前这里自己 createClient，绕过了 lib/service-client 的 fail-loud 约定）。
+    const supabase = getServiceClient();
 
     const { error } = await supabase.from('audit_logs').insert({
       action,

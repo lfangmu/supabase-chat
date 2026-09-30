@@ -1,9 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
 import { getAuthUser, getDisplayName } from '@/lib/auth-user';
-import { isRoomParticipant, isDMParticipant } from '@/lib/rooms';
+import { filterReadableRooms } from '@/lib/rooms';
+import { isValidUuid, isValidRoomId } from '@/lib/validate';
 
 export const runtime = 'edge';
+
+/** DM 房间号的规范形态：`dm:<uuid>:<uuid>`（见 P1-4）。 */
+const DM_ROOM_ID_RE =
+  /^dm:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/**
+ * `?ids=` 单次最多可查询的房间数。
+ *
+ * 真正的越权防线是下面的 `filterReadableRooms`（逐个房间判参与资格），
+ * 此上限只用于约束 URL 长度与 `.in()` 查询规模（DoS 卫生）。
+ * 客户端 `useChat.fetchRooms` 会把已加入房间按此上限分片请求，不会丢房间。
+ */
+const MAX_ROOM_IDS = 200;
 
 
 /** GET /api/rooms — list rooms with latest message timestamp (extended with type filter) */
@@ -38,12 +52,22 @@ export async function GET(request: NextRequest) {
       if (!idsParam) {
         return NextResponse.json({ success: true, rooms: [] });
       }
-      const ids = idsParam
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean);
+      const ids = Array.from(
+        new Set(
+          idsParam
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        )
+      );
       if (ids.length === 0) {
         return NextResponse.json({ success: true, rooms: [] });
+      }
+      if (ids.length > MAX_ROOM_IDS) {
+        return NextResponse.json(
+          { success: false, message: `一次最多查询 ${MAX_ROOM_IDS} 个房间，请分片请求` },
+          { status: 400 }
+        );
       }
       requestedIds = ids;
     }
@@ -70,14 +94,24 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: false, message: '获取群聊列表失败' }, { status: 500 });
     }
 
-    // 服务端二次把关：即便客户端传了非本人参与的私聊房间号（历史 bug 曾把别人的私聊
-    // 塞进 localStorage），也过滤掉其元数据，杜绝「侧栏显示别人的房间 + 点开 403」。
-    // 私聊房间号内嵌两方 UUID，isDMParticipant 为纯字符串判定（与 RLS 同源），不查库。
-    // 群聊房间号不在此过滤：群成员关系由 room_members 在服务端真实存在（不可伪造），
-    // 且 GET 仅在客户端显式传入 ids 时才返回，不暴露目录。
-    const visibleRooms = rooms.filter(
-      (r) => r.type !== 'dm' || isDMParticipant(String(r.id), actor)
+    // 服务端把关（P0-2）：**所有类型**的房间都必须逐个校验参与资格，绝不放行非成员房间。
+    //
+    // 历史 bug：此处只对 `dm` 类型做校验（`r.type !== 'dm' || isDMParticipant(...)`），
+    // `type === 'public'` 时条件短路为 true → 任何登录用户只要拿到房间 id（`room_members`
+    // 的 RLS 曾是 `USING (true)`，可全量枚举）就能通过 `?ids=` 读到任意群的
+    // 名称 / 创建者 / **最新一条消息正文**（下面的 RPC 用 service_role，绕过 RLS）。
+    //
+    // 现在统一走 `filterReadableRooms`（与 `isRoomParticipant` 同源语义，2 次查询批量判定）：
+    //   - `default-room`  → 已登录即可读
+    //   - `dm:<a>:<b>`    → 房间号内嵌参与方 UUID，纯字符串判定
+    //   - 普通群          → `room_members` 有本人一行，或本人是 `created_by`
+    // 查询失败时 fail-closed（返回空集合），不会退化成「全量放行」。
+    const readable = await filterReadableRooms(
+      rooms.map((r) => String(r.id)),
+      actor,
+      supabase
     );
+    const visibleRooms = rooms.filter((r) => readable.has(String(r.id)));
 
     // 每个房间取各自最新一条消息（RPC 按 room_id 分组，走 idx_messages_room_timestamp 索引）。
     const roomIds = visibleRooms.map((r) => r.id);
@@ -148,10 +182,32 @@ export async function POST(request: NextRequest) {
       if (!participants.map((p: string) => p.trim()).includes(actor)) {
         return NextResponse.json({ success: false, message: '私聊必须包含本人' }, { status: 403 });
       }
+      // P1-4：参与方必须是合法 UUID（此前不校验，非 UUID 会一路写进房间号）
+      if (!participants.every((p: string) => isValidUuid(String(p).trim()))) {
+        return NextResponse.json({ success: false, message: '参与者必须是合法的用户 UUID' }, { status: 400 });
+      }
 
       // DM room ID: dm:<sortedUUIDs>；参与方均为 UUID（绝不存昵称）
       const sorted = [...participants].map((u: string) => u.trim()).sort();
-      const dmRoomId = customId || `dm:${sorted.join(':')}`;
+      const canonicalDmId = `dm:${sorted.join(':')}`;
+
+      // P1-4：`customId` 来自请求体，**绝不能**直接当主键用。
+      // 房间号会进入 `is_room_participant()` 的 `split_part(...)::uuid[]`，
+      // 形如 `dm:abc:def` 的房间号会让该函数抛异常；而它被 messages/rooms 的 RLS 调用，
+      // 于是任何触及该行的 SELECT 会整体报错（对 authenticated 直读 rooms 即为可用性故障）。
+      // 现在：格式不合法 → 400；与参与方推导出的规范房间号不一致 → 403；一致则等价于不传。
+      if (customId !== undefined && customId !== null) {
+        if (typeof customId !== 'string' || !DM_ROOM_ID_RE.test(customId)) {
+          return NextResponse.json({ success: false, message: '无效的私聊房间号' }, { status: 400 });
+        }
+        if (customId !== canonicalDmId) {
+          return NextResponse.json(
+            { success: false, message: '私聊房间号与参与者不一致' },
+            { status: 403 }
+          );
+        }
+      }
+      const dmRoomId = canonicalDmId;
       const otherUuid = participants.find((p: string) => p.trim() !== created_by.trim()) || sorted[0];
 
       const supabase = getServiceClient();
@@ -247,6 +303,9 @@ export async function PUT(request: NextRequest) {
     if (!id || !name || typeof name !== 'string' || name.trim().length === 0) {
       return NextResponse.json({ success: false, message: '缺少参数' }, { status: 400 });
     }
+    if (!isValidRoomId(id)) {
+      return NextResponse.json({ success: false, message: '无效的群聊 ID' }, { status: 400 });
+    }
 
     const trimmedName = name.trim();
     if (trimmedName.length > 50) {
@@ -259,13 +318,16 @@ export async function PUT(request: NextRequest) {
 
     const supabase = getServiceClient();
 
+    // P2-14：与 `/api/rooms/members` 的 PUT/DELETE 保持同一套角色语义 —— 改名/删群仅限
+    // **群主**（`rooms.created_by`，或 `room_members.role = 'owner'`）。此前只校验「是成员」，
+    // 导致任何普通成员都能重命名甚至删除整个群。
     const [memberRow, roomRow] = await Promise.all([
-      supabase.from('room_members').select('user_id').eq('room_id', id).eq('user_id', actor).maybeSingle(),
+      supabase.from('room_members').select('role').eq('room_id', id).eq('user_id', actor).maybeSingle(),
       supabase.from('rooms').select('created_by').eq('id', id).maybeSingle(),
     ]);
-    const isOwner = roomRow.data?.created_by === actor;
-    if (!memberRow.data && !isOwner) {
-      return NextResponse.json({ success: false, message: '只能重命名自己所在的群' }, { status: 403 });
+    const isOwner = roomRow.data?.created_by === actor || memberRow.data?.role === 'owner';
+    if (!isOwner) {
+      return NextResponse.json({ success: false, message: '只有群主可以重命名群聊' }, { status: 403 });
     }
 
     const { error } = await supabase
@@ -299,6 +361,9 @@ export async function DELETE(request: NextRequest) {
     if (!id) {
       return NextResponse.json({ success: false, message: '缺少群聊 ID' }, { status: 400 });
     }
+    if (!isValidRoomId(id)) {
+      return NextResponse.json({ success: false, message: '无效的群聊 ID' }, { status: 400 });
+    }
 
     if (id === 'default-room') {
       return NextResponse.json({ success: false, message: '不能删除默认群聊' }, { status: 403 });
@@ -306,13 +371,14 @@ export async function DELETE(request: NextRequest) {
 
     const supabase = getServiceClient();
 
+    // P2-14：删群仅限群主（与改名、`/api/rooms/members` 的角色语义统一）。
     const [memberRow, roomRow] = await Promise.all([
-      supabase.from('room_members').select('user_id').eq('room_id', id).eq('user_id', actor).maybeSingle(),
+      supabase.from('room_members').select('role').eq('room_id', id).eq('user_id', actor).maybeSingle(),
       supabase.from('rooms').select('created_by').eq('id', id).maybeSingle(),
     ]);
-    const isOwner = roomRow.data?.created_by === actor;
-    if (!memberRow.data && !isOwner) {
-      return NextResponse.json({ success: false, message: '只能删除自己所在的群' }, { status: 403 });
+    const isOwner = roomRow.data?.created_by === actor || memberRow.data?.role === 'owner';
+    if (!isOwner) {
+      return NextResponse.json({ success: false, message: '只有群主可以删除群聊' }, { status: 403 });
     }
 
     // Delete all messages in the room
@@ -323,6 +389,18 @@ export async function DELETE(request: NextRequest) {
 
     if (msgError) {
       console.error('Delete messages failed:', msgError);
+    }
+
+    // P2-13：级联清理成员行，否则 `room_members` 留下孤儿行 →
+    // `/api/rooms/mine` 仍会列出已删除的房间，前端 `reconcileMyRooms` 反复把幽灵房间加回侧栏。
+    // 放在删 rooms 之前：即使随后删 rooms 失败，也只是「有成员无房间」，不会再出现幽灵房间。
+    const { error: memberDelError } = await supabase
+      .from('room_members')
+      .delete()
+      .eq('room_id', id);
+
+    if (memberDelError) {
+      console.error('Delete room_members failed:', memberDelError);
     }
 
     // Delete the room

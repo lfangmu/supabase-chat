@@ -6,8 +6,17 @@ import { Loader2, MessageCircle, RefreshCw, ArrowDown } from 'lucide-react';
 import { Message, Reaction } from '@/types';
 import MessageItem from './MessageItem';
 import DateSeparator from './DateSeparator';
-import { buildVirtualList, estimateItemSize } from '@/utils/virtual-list-utils';
+import {
+  buildVirtualList,
+  estimateItemSize,
+  resolveShowScrollBtn,
+  computePrependScrollTop,
+  pinnedScrollTop,
+  isPrependGrowth,
+  PINNED_THRESHOLD,
+} from '@/utils/virtual-list-utils';
 import { formatClock } from '@/utils/date-utils';
+import { mediaPlaceholder } from '@/utils/labels';
 
 interface MessageListProps {
   messages: Message[];
@@ -43,10 +52,18 @@ interface MessageListProps {
   roomId?: string;
   /** 当前用户 UUID：自消息判定以它为准（展示名会被改名改掉） */
   currentUserId?: string;
+  /** 点击消息头像：打开该用户的个人资料卡（微信式） */
+  onAvatarClick?: (info: { userId?: string; name: string }) => void;
 }
 
+/** 「贴底」判定阈值：距底部小于它即认为用户在看最新消息 */
 const NEAR_BOTTOM_THRESHOLD = 120;
+/** 距顶部小于它即触发加载更多历史 */
 const LOAD_MORE_THRESHOLD = 80;
+/** 顶部插入历史后，内容高度静默多久即解除「滚动锚定」（见 utils 中的滞回/锚定说明） */
+const PREPEND_ANCHOR_RELEASE_MS = 400;
+/** 顶部插入历史的锚定兜底时长：超时仍未发生高度变化则强制解除，避免锚点残留 */
+const PREPEND_ANCHOR_FALLBACK_MS = 5000;
 
 const MessageList: React.FC<MessageListProps> = React.memo(({
   messages,
@@ -73,13 +90,31 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
   onLoadMessageById,
   roomId = '',
   currentUserId,
+  onAvatarClick,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  /** 内容包裹层：ResizeObserver 观察其高度变化，用于「贴底跟随」与「顶部插入锚定」 */
+  const contentRef = useRef<HTMLDivElement>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
+  /** 与 showScrollBtn 同步的 ref：滚动回调里不能读过期的 state，否则滞回判定失效 */
+  const showScrollBtnRef = useRef(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const prevLenRef = useRef(messages.length);
+  /** 虚拟列表末项 key：用于区分「顶部插入历史」与「底部追加新消息」 */
+  const lastKeyRef = useRef<string | number | null>(null);
   const isNearBottomRef = useRef(true);
+  /** 是否「贴着底部」：比 isNearBottomRef 更紧，用于内容高度变化时的贴底跟随 */
+  const isPinnedRef = useRef(true);
   const hasInitialScrolledRef = useRef(false);
+  /** 顶部插入历史时的滚动锚点：记录插入前的 scrollHeight / scrollTop */
+  const prependAnchorRef = useRef<{ height: number; top: number } | null>(null);
+  /** 锚点兜底定时器 */
+  const prependAnchorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** loadingMore 的 ref 镜像：ResizeObserver 回调里必须读到最新值 */
+  const loadingMoreRef = useRef(loadingMore);
+  useEffect(() => {
+    loadingMoreRef.current = loadingMore;
+  }, [loadingMore]);
   // 切换房间重置锚点
   const roomIdRef = useRef(roomId);
   // 全局搜索跳转：当前需高亮的消息 id（2.5s 后由 effect 清除）
@@ -99,7 +134,9 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     const container = containerRef.current;
     if (!container || refreshing) return;
-    touchStartRef.current = { y: e.touches[0].clientY, scrollTop: container.scrollTop };
+    const touch = e.touches[0];
+    if (!touch) return;
+    touchStartRef.current = { y: touch.clientY, scrollTop: container.scrollTop };
   }, [refreshing]);
 
   const handleTouchMove = useCallback((e: React.TouchEvent) => {
@@ -110,7 +147,9 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
       setPullDistance(0);
       return;
     }
-    const delta = e.touches[0].clientY - touchStartRef.current.y;
+    const touch = e.touches[0];
+    if (!touch) return;
+    const delta = touch.clientY - touchStartRef.current.y;
     if (delta > 0) {
       // Apply resistance (diminishing pull)
       setPullDistance(Math.min(delta * 0.4, 100));
@@ -140,9 +179,12 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
   const virtualizer = useVirtualizer({
     count: virtualItems.length,
     getScrollElement: () => containerRef.current,
-    estimateSize: (index) => estimateItemSize(virtualItems[index]),
+    estimateSize: (index) => {
+      const item = virtualItems[index];
+      return item ? estimateItemSize(item) : 72;
+    },
     overscan: 8,
-    getItemKey: (index) => virtualItems[index].key,
+    getItemKey: (index) => virtualItems[index]?.key ?? index,
   });
 
   // Detect scroll position for auto-scroll button + load-more trigger
@@ -151,10 +193,20 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
     if (!container) return;
 
     const onScroll = () => {
-      const nearBottom =
-        container.scrollHeight - container.scrollTop - container.clientHeight < NEAR_BOTTOM_THRESHOLD;
+      const distanceToBottom =
+        container.scrollHeight - container.scrollTop - container.clientHeight;
+      const nearBottom = distanceToBottom < NEAR_BOTTOM_THRESHOLD;
       isNearBottomRef.current = nearBottom;
-      setShowScrollBtn(!nearBottom);
+      isPinnedRef.current = distanceToBottom <= PINNED_THRESHOLD;
+
+      // 滞回：只有明显远离底部才显示按钮；回到阈值内立即隐藏。
+      // 用 ref 与 state 双写，保证连续滚动事件之间不会读到过期的 state。
+      const shouldShow = resolveShowScrollBtn(distanceToBottom, showScrollBtnRef.current);
+      if (shouldShow !== showScrollBtnRef.current) {
+        showScrollBtnRef.current = shouldShow;
+        setShowScrollBtn(shouldShow);
+      }
+
       if (nearBottom) {
         setUnreadCount(0);
         if (firstUnreadIdRef.current) {
@@ -165,6 +217,15 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
 
       // Trigger load more when near top
       if (container.scrollTop < LOAD_MORE_THRESHOLD && hasMore && !loadingMore && messages.length > 0) {
+        // 记录锚点：历史插入到列表顶部后，用高度差补偿 scrollTop，保持视口内容不动
+        if (!prependAnchorRef.current) {
+          prependAnchorRef.current = { height: container.scrollHeight, top: container.scrollTop };
+        }
+        if (prependAnchorTimerRef.current) clearTimeout(prependAnchorTimerRef.current);
+        prependAnchorTimerRef.current = setTimeout(() => {
+          prependAnchorRef.current = null;
+          prependAnchorTimerRef.current = null;
+        }, PREPEND_ANCHOR_FALLBACK_MS);
         onLoadMore();
       }
     };
@@ -172,6 +233,83 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
     container.addEventListener('scroll', onScroll, { passive: true });
     return () => container.removeEventListener('scroll', onScroll);
   }, [hasMore, loadingMore, messages.length, onLoadMore]);
+
+  // === 滚动稳定性（修复「消息框上下来回弹」） ===
+  // 症状：新消息/「输入中」指示器出现时，右侧滚动条与消息内容上下来回弹，且
+  //       「回到最新」按钮反复闪现。根因有三：
+  //   1) 容器未禁用浏览器**原生滚动锚定**（overflow-anchor），它会与虚拟列表的
+  //      挂载/卸载 + measureElement 修正互相打架，各自调整 scrollTop → 抖动；
+  //   2) 内容高度变化（输入中指示器 ±28px、图片加载、虚拟列表测量修正）时，若用户
+  //       正贴在底部，视口不会重新贴底，最新消息漂出视野、距底距离在阈值附近震荡；
+  //   3) 顶部插入历史时没有补偿 scrollTop，视口被整体顶走（实测一次 ~1380px）。
+  // 下面用 ResizeObserver 统一处理 2) 与 3)，并在容器上设 overflow-anchor:none 处理 1)。
+  useEffect(() => {
+    const container = containerRef.current;
+    const content = contentRef.current;
+    if (!container || !content || typeof ResizeObserver === 'undefined') return;
+
+    let releaseTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const ro = new ResizeObserver(() => {
+      const height = content.offsetHeight;
+
+      // (3) 顶部插入历史：用高度差补偿 scrollTop，把原视口内容钉在原处
+      const anchor = prependAnchorRef.current;
+      if (anchor) {
+        if (height !== anchor.height) {
+          container.scrollTop = computePrependScrollTop(anchor.top, anchor.height, height);
+          anchor.height = height;
+          anchor.top = container.scrollTop;
+        }
+        // 释放时机：加载中（loadingMore=true）必须一直保持锚定，否则「静默
+        // PREPEND_ANCHOR_RELEASE_MS 就解除」会在真正的历史插入到达之前把锚点
+        // 解掉 —— 实测那样只补偿到 200/1371px，视口仍被顶走 ~1000px。
+        // 加载结束后再等 PREPEND_ANCHOR_RELEASE_MS，让最后一次布局修正落定。
+        if (!loadingMoreRef.current) {
+          if (releaseTimer) clearTimeout(releaseTimer);
+          releaseTimer = setTimeout(() => {
+            prependAnchorRef.current = null;
+            releaseTimer = null;
+          }, PREPEND_ANCHOR_RELEASE_MS);
+        }
+        return;
+      }
+
+      // (2) 贴底跟随：只在用户确实贴着底部时生效，避免把上滑阅读的用户拽下来。
+      //     用「对齐到内容末端」而不是「scrollTop += 高度差」——后者在内容变矮时
+      //     会与浏览器的钳制重复抵消，反而把视口顶上去（详见 pinnedScrollTop 注释）。
+      //     非贴底时无需处理：追加在底部的内容不会移动视口上方的内容，而视口上方
+      //     条目的测量修正由虚拟器自身的 scrollAdjustments 负责。
+      if (!isPinnedRef.current) return;
+      const target = pinnedScrollTop(container.scrollHeight, container.clientHeight);
+      if (container.scrollTop !== target) container.scrollTop = target;
+    });
+
+    ro.observe(content);
+    return () => {
+      ro.disconnect();
+      if (releaseTimer) clearTimeout(releaseTimer);
+    };
+  }, []);
+
+  // 加载结束（loadingMore 由 true 落回 false）后及时解除锚定，避免锚点滞留：
+  // 若一直挂着，之后真正到达的**新消息**也会被当成 prepend 去补偿，反而错位。
+  useEffect(() => {
+    if (loadingMore || !prependAnchorRef.current) return;
+    const t = setTimeout(() => {
+      prependAnchorRef.current = null;
+      if (prependAnchorTimerRef.current) {
+        clearTimeout(prependAnchorTimerRef.current);
+        prependAnchorTimerRef.current = null;
+      }
+    }, PREPEND_ANCHOR_RELEASE_MS);
+    return () => clearTimeout(t);
+  }, [loadingMore]);
+
+  // 卸载时清理锚点兜底定时器
+  useEffect(() => () => {
+    if (prependAnchorTimerRef.current) clearTimeout(prependAnchorTimerRef.current);
+  }, []);
 
   // Initial scroll to bottom (once)
   useEffect(() => {
@@ -188,12 +326,27 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
     if (roomId !== roomIdRef.current) {
       roomIdRef.current = roomId;
       prevLenRef.current = len;
+      lastKeyRef.current = len > 0 ? virtualItems[len - 1]?.key ?? null : null;
+      // 新房间从底部开始看，重置贴底/滚动锚点状态
+      isNearBottomRef.current = true;
+      isPinnedRef.current = true;
+      prependAnchorRef.current = null;
       setUnreadCount(0);
       firstUnreadIdRef.current = null;
       setFirstUnreadId(null);
       return;
     }
-    if (len <= prevLenRef.current || !hasInitialScrolledRef.current) {
+    const lastKey = len > 0 ? virtualItems[len - 1]?.key ?? null : null;
+    const prevLastKey = lastKeyRef.current;
+    lastKeyRef.current = lastKey;
+
+    // 顶部插入历史（prepend）与底部追加新消息（append）都会让 len 变大，必须区分开：
+    //   append 一定会改变末项 key；prepend 的末项 key 保持不变。
+    // 若把 prepend 当成新消息，就会把正在上滑看历史的用户直接拽到底部（实测被拽走
+    // ~3800px），并把历史消息误计入未读数、误显示「新消息」分隔线。
+    const isPrepend = isPrependGrowth(len, prevLenRef.current, lastKey, prevLastKey);
+
+    if (len <= prevLenRef.current || !hasInitialScrolledRef.current || isPrepend) {
       prevLenRef.current = len;
       return;
     }
@@ -211,6 +364,11 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
       : lastMsg?.user === user;
 
     if (isNearBottomRef.current || isSelf) {
+      // 主动贴底：同步收起「回到最新」气泡，避免平滑滚动过程中按钮残留
+      if (showScrollBtnRef.current) {
+        showScrollBtnRef.current = false;
+        setShowScrollBtn(false);
+      }
       virtualizer.scrollToIndex(len - 1, {
         behavior: isSelf ? 'smooth' : 'auto',
         align: 'end',
@@ -222,6 +380,7 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
         let boundary: Message | null = null;
         for (let i = prevLenRef.current; i < virtualItems.length; i++) {
           const v = virtualItems[i];
+          if (!v) continue;
           if (v.type === 'message') {
             boundary = v.message;
             break;
@@ -248,6 +407,16 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
   }, []);
 
   const scrollToBottom = useCallback(() => {
+    // 顶部插入历史的锚点若仍挂着，会与本次贴底互相抵消，先解除
+    prependAnchorRef.current = null;
+    if (prependAnchorTimerRef.current) {
+      clearTimeout(prependAnchorTimerRef.current);
+      prependAnchorTimerRef.current = null;
+    }
+    isNearBottomRef.current = true;
+    isPinnedRef.current = true;
+    showScrollBtnRef.current = false;
+    setShowScrollBtn(false);
     virtualizer.scrollToIndex(virtualItems.length - 1, { behavior: 'smooth', align: 'end' });
     setUnreadCount(0);
     if (firstUnreadIdRef.current) {
@@ -292,25 +461,57 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
     );
   }, [messages, searchQuery, searchActive]);
 
+  // 最新一条消息的播报文本（见上方离屏 live region 的说明）
+  const liveAnnouncement = useMemo(() => {
+    if (messages.length === 0) return '';
+    const latest = messages[messages.length - 1];
+    if (!latest) return '';
+    const body =
+      latest.type === 'text' ? latest.content : mediaPlaceholder(latest.type) ?? '';
+    return `${latest.user}：${body}`;
+  }, [messages]);
+
   return (
     <div className="flex-1 relative overflow-hidden flex flex-col">
+      {/* 受控的离屏播报区：只播报**最新一条**消息，避免虚拟列表滚动时持续播报 */}
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {liveAnnouncement}
+      </div>
+      {/*
+        P3 可访问性修复：这里原先是 `role="log" aria-live="polite"`。
+        `role="log"` 隐含 `aria-live="polite"`，而本列表是**虚拟列表** —— 滚动时
+        会不断挂载/卸载消息节点，屏幕阅读器会把「上下滚动」当成大量新内容持续播报，
+        完全无法使用。现在：容器改为普通 `role="list"`（不播报），
+        另用一个受控的、仅包含**最新一条消息**的离屏 live region 做播报。
+      */}
       <main
         ref={containerRef}
         className="flex-1 h-full overflow-y-auto px-4 relative"
-        role="log"
+        role="list"
         aria-label="聊天消息列表"
-        aria-live="polite"
+        // 禁用浏览器原生滚动锚定：它会与虚拟列表的挂载/卸载、measureElement 修正
+        // 互相打架，各自改 scrollTop 造成「消息上下来回弹」。锚定改由下方
+        // ResizeObserver 精确接管（贴底跟随 + 顶部插入补偿）。
+        style={{ overflowAnchor: 'none' }}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
         onClick={(e) => {
-          // Dismiss keyboard when tapping on empty area of the message list
+          // Dismiss keyboard when tapping on empty area of the message list.
+          // ⚠️ 必须排除 TEXTAREA / INPUT：消息「编辑」态下的 textarea 也在本容器里，
+          // 一律 blur 会让点击编辑框时被瞬时夺焦（activeElement → BODY），键盘事件
+          // 落不到 textarea 上，造成「点了编辑却无法改」的现象。链接/提交按钮同理。
           const tag = (e.target as HTMLElement).tagName;
-          if (tag !== 'BUTTON' && tag !== 'A') {
+          if (tag !== 'BUTTON' && tag !== 'A' && tag !== 'TEXTAREA' && tag !== 'INPUT') {
             (document.activeElement as HTMLElement)?.blur?.();
           }
         }}
       >
+        {/*
+          内容包裹层：ResizeObserver 的观察目标。必须是**紧贴滚动容器的单一子节点**，
+          否则观察到的不是完整内容高度，贴底跟随与顶部插入锚定都会算错。
+        */}
+        <div ref={contentRef}>
         {/* Pull-to-refresh indicator */}
         {(pullDistance > 0 || refreshing) && (
           <div
@@ -376,6 +577,7 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
                     avatarUrl={avatars?.[message.user] ?? null}
                     reactions={reactionsByMessage[message.id]}
                     onToggleReaction={onToggleReaction}
+                    onAvatarClick={onAvatarClick}
                     highlight={message.id === highlightedId}
                   />
                 ))}
@@ -393,6 +595,7 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
 
               {renderedVirtualItems.map((virtualRow) => {
                 const item = virtualItems[virtualRow.index];
+                if (!item) return null;
 
                 if (item.type === 'separator') {
                   return (
@@ -437,6 +640,7 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
                       avatarUrl={avatars?.[message.user] ?? null}
                       reactions={reactionsByMessage[message.id]}
                       onToggleReaction={onToggleReaction}
+                      onAvatarClick={onAvatarClick}
                       highlight={message.id === highlightedId}
                     />
                   </div>
@@ -501,6 +705,7 @@ const MessageList: React.FC<MessageListProps> = React.memo(({
 
         {/* Bottom spacer for scroll anchor */}
         <div className="h-2" />
+        </div>
       </main>
 
       {/* 回到最新 / N 条新消息 气泡 */}

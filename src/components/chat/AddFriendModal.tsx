@@ -3,6 +3,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { X, Search, UserPlus, MessageCircle, Check, Loader2 } from 'lucide-react';
 import Avatar from './Avatar';
+import { formatRelativeTime } from '@/utils/labels';
 
 interface SearchResult {
   /** 用户 UUID（身份） */
@@ -28,20 +29,12 @@ interface AddFriendModalProps {
   outgoingIds?: string[];
 }
 
-/** Format relative time */
+/**
+ * Format relative time（P3：改为调用共享实现 `utils/labels.ts`，
+ * 此前与 ContactsPage 各抄一份，改一处漏两处会导致同一时间在不同界面显示不一致）
+ */
 function formatLastSeen(ts: string | null): string {
-  if (!ts) return '';
-  const date = new Date(ts);
-  const diff = Date.now() - date.getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return '刚刚';
-  if (mins < 60) return `${mins} 分钟前`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours} 小时前`;
-  const days = Math.floor(hours / 24);
-  if (days === 1) return '昨天';
-  if (days < 7) return `${days} 天前`;
-  return `${date.getMonth() + 1}/${date.getDate()}`;
+  return formatRelativeTime(ts, { withYesterday: true });
 }
 
 const AddFriendModal: React.FC<AddFriendModalProps> = ({
@@ -158,11 +151,18 @@ const AddFriendModal: React.FC<AddFriendModalProps> = ({
       <div
         className="w-full max-w-lg max-h-[70vh] bg-card rounded-t-2xl sm:rounded-2xl flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="添加好友"
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
           <h2 className="text-base font-semibold text-foreground">添加好友</h2>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-muted transition-colors">
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-muted transition-colors"
+            aria-label="关闭"
+          >
             <X className="w-5 h-5 text-muted-foreground" />
           </button>
         </div>

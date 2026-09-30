@@ -45,7 +45,7 @@ function getFileExtension(fileName: string | null | undefined): string {
   if (!fileName) return '';
   const parts = fileName.split('.');
   if (parts.length < 2) return '';
-  return parts[parts.length - 1].toUpperCase();
+  return (parts[parts.length - 1] ?? '').toUpperCase();
 }
 
 /**

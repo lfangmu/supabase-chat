@@ -1,6 +1,6 @@
 ﻿import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
-import { getAuthUser } from '@/lib/auth-user';
+import { requireAdmin } from '@/lib/admin-auth';
 
 export const runtime = 'edge';
 
@@ -8,7 +8,7 @@ export const runtime = 'edge';
 /**
  * GET /api/admin/audit-logs — 管理后台：查看操作审计日志
  *
- * 鉴权：middleware 已确保调用者为 users.role='admin'。这里再解析 actor 兜底校验一次。
+ * 鉴权（P1-3）：requireAdmin 路由内独立校验 role='admin'（不再只解析 actor）。
  * 参数：
  *   - action: 按操作类型筛选（可选）
  *   - limit: 返回条数，默认 100，最大 500
@@ -16,17 +16,14 @@ export const runtime = 'edge';
  */
 export async function GET(request: NextRequest) {
   try {
-    const actor = await getAuthUser(request);
-    if (!actor) {
-      return NextResponse.json(
-        { success: false, message: '未认证的管理员会话' },
-        { status: 401 }
-      );
-    }
+    const auth = await requireAdmin(request);
+    if (!auth.ok) return auth.response;
 
     const { searchParams } = new URL(request.url);
     const action = searchParams.get('action');
-    const limit = Math.min(parseInt(searchParams.get('limit') || '100', 10), 500);
+    // P2-2：`parseInt` 未兜底时 `?limit=abc` → NaN，直接传给 `.limit()` 会产生非法请求。
+    const rawLimit = parseInt(searchParams.get('limit') || '100', 10);
+    const limit = Math.min(Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 100, 500);
     const before = searchParams.get('before');
 
     const supabase = getServiceClient();

@@ -7,6 +7,17 @@ import { checkRateLimit, getRateLimitConfig, getClientIp } from '@/lib/rate-limi
 const PUBLIC_API_ROUTES = [
   // 保活端点：供外部 uptime 监控无 cookie 访问，防止 Supabase 免费项目因长时间无活动被暂停
   '/api/keepalive',
+  // 同源反向代理的「透传」路由（REST / Auth / Storage / Realtime）。
+  // 它们是透明代理：真正的鉴权由上游 Supabase 依据请求里携带的 apikey / Authorization 完成
+  // （PostgREST 的 RLS、GoTrue 自身校验），代理侧不注入任何特权密钥，故放行是安全的。
+  // ⚠️ /api/auth/v1 必须放行：注册 / 登录 / 找回密码 / OTP 这些流程发生时，用户「本来就还没有会话」，
+  // 若被 middleware 的登录校验拦截，就会出现「注册时报 401：未认证，请先登录」。
+  '/api/auth/v1',
+  '/api/rest/v1',
+  '/api/storage/v1',
+  '/api/realtime',
+  // 诊断端点：仅暴露 build / 目标 host / sameOrigin，无敏感信息（项目 ref 本就内联在客户端）。
+  '/api/health',
 ];
 
 export async function middleware(request: NextRequest) {

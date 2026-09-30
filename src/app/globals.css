@@ -302,3 +302,16 @@
 .theme-classic.dark :focus-visible {
   outline-color: hsl(239, 84%, 67%);
 }
+
+/* ─── @提及 高亮 ───
+   P3 修复：此前每条文本消息都注入一份完全相同的 <style> 标签（N 条消息 = N 份重复样式表）。
+   现在改为全局定义一次，由 TextMessage 按 isSelf 选择类名。
+   （sanitizeSchema 放行了 span 的 className，因此这两个类名能穿过 rehype-sanitize。） */
+.mention-highlight {
+  color: hsl(var(--primary));
+  font-weight: 600;
+}
+.mention-highlight-self {
+  color: #fef3c7;
+  font-weight: 600;
+}

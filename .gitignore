@@ -26,7 +26,11 @@ yarn-debug.log*
 yarn-error.log*
 
 # local env files
-.env*.local
+# 裸 `.env` / `.env.production` / `.env.development` 同样含特权密钥，
+# 只写 `.env*.local` 会漏掉它们（P3 仓库卫生）。
+.env
+.env.*
+!.env.example
 
 # vercel
 .vercel
@@ -34,7 +38,6 @@ yarn-error.log*
 # opennext / cloudflare
 .open-next
 .wrangler
-.next-old-*
 
 # typescript
 *.tsbuildinfo
@@ -43,6 +46,6 @@ next-env.d.ts
 # workbuddy
 .workbuddy/
 
-# cloudflare worker / next backups
-.next-bak-*
+# cloudflare worker / next backups（旧构建产物，可能很大）
 .next-old-*
+.next-bak-*

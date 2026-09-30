@@ -42,7 +42,10 @@ function toUsers(metas: RelayPresenceMeta[]): PresenceUser[] {
 function sameUsers(a: PresenceUser[], b: PresenceUser[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
-    if (a[i].id !== b[i].id || a[i].nickname !== b[i].nickname || a[i].online_at !== b[i].online_at) {
+    const ai = a[i];
+    const bi = b[i];
+    if (!ai || !bi) return false;
+    if (ai.id !== bi.id || ai.nickname !== bi.nickname || ai.online_at !== bi.online_at) {
       return false;
     }
   }

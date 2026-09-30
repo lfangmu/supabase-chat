@@ -123,10 +123,8 @@ export function useReadReceipts({
       if (!ids.length) return;
       applyReadFlags(ids);
     };
-    receiptHandlerRef.current = handler;
-    return () => {
-      receiptHandlerRef.current = null;
-    };
+    // P2-24：注册到注册表（而非覆盖模块级单例），卸载时只注销自己
+    return registerReceiptHandler(handler);
   }, [isDM, applyReadFlags]);
 
   // 回到前台时重拉一次已读状态。
@@ -210,5 +208,41 @@ export function useReadReceipts({
   return { fetchReadState };
 }
 
-// 模块级转发：useMessageRealtime 收到 'receipt' 时调用
-export const receiptHandlerRef: { current: ((payload: { messageIds?: string[] }) => void) | null } = { current: null };
+// 模块级回执分发（P2-24）
+//
+// 此前是一个模块级可变引用 `receiptHandlerRef: { current: handler | null }`：
+// 多实例挂载时**后写覆盖前者**（`useMessages` 被同时挂载两个房间、或 StrictMode 双挂载
+// 的窗口期内都会发生），存在跨会话串扰 —— 收到 A 房间的 receipt 广播却更新了 B 房间的状态。
+//
+// 现在改为「注册表 + 令牌」：多个实例可并存，卸载时只移除自己注册的那一个，
+// 分发时遍历全部处理器（每个实例自行判断是否与自己相关）。
+type ReceiptHandler = (payload: { messageIds?: string[] }) => void;
+
+const receiptHandlers = new Map<number, ReceiptHandler>();
+let receiptHandlerSeq = 0;
+
+/** 注册一个回执处理器，返回注销函数（供 effect cleanup 调用）。 */
+export function registerReceiptHandler(handler: ReceiptHandler): () => void {
+  receiptHandlerSeq += 1;
+  const token = receiptHandlerSeq;
+  receiptHandlers.set(token, handler);
+  return () => {
+    receiptHandlers.delete(token);
+  };
+}
+
+/** 把回执广播分发给所有已注册处理器；单个处理器抛错不影响其它处理器。 */
+export function dispatchReceipt(payload: { messageIds?: string[] }): void {
+  for (const handler of Array.from(receiptHandlers.values())) {
+    try {
+      handler(payload);
+    } catch (err) {
+      console.error('receipt handler 执行失败:', err);
+    }
+  }
+}
+
+/** 清空注册表（仅供测试在用例之间重置状态使用）。 */
+export function clearReceiptHandlers(): void {
+  receiptHandlers.clear();
+}

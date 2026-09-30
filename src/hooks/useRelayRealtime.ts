@@ -15,7 +15,7 @@
 //
 // 与原 useMessageRealtime 相同的去重 / @提及 / 通知 / 缓存逻辑已移植。
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { connectRelay, sendRelay, type RelayClient, type RelayEvent } from '@/lib/realtimeRelay';
 import { applyRelayPresence } from '@/lib/presenceRelay';
@@ -23,7 +23,7 @@ import { Message, Reaction } from '@/types';
 import { STORAGE_CONFIG_KEYS, MESSAGE_CONFIG } from '@/config';
 import { safeSetCache } from '@/utils/cacheUtils';
 import { notifyNewMessage, notifyMention, isMentioned, addMentionedRoom } from '@/utils/notifications';
-import { receiptHandlerRef } from './useReadReceipts';
+import { dispatchReceipt } from './useReadReceipts';
 
 const MAX_PROCESSED_IDS = MESSAGE_CONFIG.MAX_PROCESSED_IDS;
 
@@ -33,6 +33,16 @@ const PROXY_URL =
   process.env.NEXT_PUBLIC_SUPABASE_URL ||
   '';
 const RELAY_APIKEY = process.env.NEXT_PUBLIC_SUPABASE_KEY || '';
+
+/** 宽松收窄：中继负载是外部输入，取字符串字段前一律过一遍类型判断。 */
+function asString(v: unknown): string {
+  return typeof v === 'string' ? v : '';
+}
+
+/** 宽松收窄：把 unknown 当成字典读；非对象一律返回空对象，避免后续取字段抛错。 */
+function asRecord(v: unknown): Record<string, unknown> {
+  return v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
+}
 
 function trimProcessedIds(set: Set<string>) {
   if (set.size > MAX_PROCESSED_IDS) {
@@ -44,20 +54,27 @@ function trimProcessedIds(set: Set<string>) {
 }
 
 function rowToMessage(row: Record<string, unknown>): Message {
+  // 兼容两种上游形态：① 直接给出行数据；② 给 CDC 信封 { record, old_record, ... }。
+  // 后者是 Supabase postgres_changes 的原始负载，行数据在 .record —— 解包一层再取字段，
+  // 否则 id/user/timestamp 全为 undefined（症状：消息时间戳 Invalid → 日期分隔线「NaN年NaN月NaN日」）。
+  const envelope = row as { record?: unknown };
+  const inner = envelope.record;
+  const r: Record<string, unknown> =
+    inner && typeof inner === 'object' ? (inner as Record<string, unknown>) : row;
   return {
-    id: row.id as string,
-    user: row.user as string,
-    userId: row.user_id as string,
-    type: row.type as Message['type'],
-    content: row.content as string,
-    timestamp: row.timestamp as string,
-    quoteId: (row.quote_id as string | undefined) ?? undefined,
-    quote: (row.quote as Message['quote']) ?? undefined,
-    edited_at: (row.edited_at as string | null) ?? null,
-    withdrawn_at: (row.withdrawn_at as string | null) ?? null,
-    file_name: (row.file_name as string | null) ?? null,
-    file_size: (row.file_size as number | null) ?? null,
-    file_mime: (row.file_mime as string | null) ?? null,
+    id: r.id as string,
+    user: r.user as string,
+    userId: r.user_id as string,
+    type: r.type as Message['type'],
+    content: r.content as string,
+    timestamp: r.timestamp as string,
+    quoteId: (r.quote_id as string | undefined) ?? undefined,
+    quote: (r.quote as Message['quote']) ?? undefined,
+    edited_at: (r.edited_at as string | null) ?? null,
+    withdrawn_at: (r.withdrawn_at as string | null) ?? null,
+    file_name: (r.file_name as string | null) ?? null,
+    file_size: (r.file_size as number | null) ?? null,
+    file_mime: (r.file_mime as string | null) ?? null,
     sendStatus: 'sent' as const,
   };
 }
@@ -79,10 +96,15 @@ interface UseRelayRealtimeParams {
   roomIds?: string[];
   onNewDM?: (roomId: string) => void;
   onReaction?: (messageId: string, reactions: Reaction[]) => void;
+  /**
+   * 「权威刷新」回调：收到 edit-message / withdraw-message 广播时调用，
+   * 由上层按 id 回源数据库取回真实内容（广播 payload 不可信）。
+   */
+  onAuthoritativeUpdate?: (messageId: string) => void;
   isActive?: boolean;
   onMention?: (roomId: string) => void;
   // presence 事件转发（接入 usePresence 时消费；v0 暂未完整整合）
-  onPresence?: (data: any) => void;
+  onPresence?: (data: Record<string, unknown>) => void;
 }
 
 export function useRelayRealtime({
@@ -101,6 +123,7 @@ export function useRelayRealtime({
   roomIds = [],
   onNewDM,
   onReaction,
+  onAuthoritativeUpdate,
   isActive = false,
   onMention,
   onPresence,
@@ -119,6 +142,7 @@ export function useRelayRealtime({
   const onExternalMessageRef = useRef(onExternalMessage);
   const onNewDMRef = useRef(onNewDM);
   const onReactionRef = useRef(onReaction);
+  const onAuthoritativeUpdateRef = useRef(onAuthoritativeUpdate);
   const onPresenceRef = useRef(onPresence);
 
   useEffect(() => {
@@ -134,6 +158,7 @@ export function useRelayRealtime({
     onExternalMessageRef.current = onExternalMessage;
     onNewDMRef.current = onNewDM;
     onReactionRef.current = onReaction;
+    onAuthoritativeUpdateRef.current = onAuthoritativeUpdate;
     isActiveRef.current = isActive;
     onMentionRef.current = onMention;
     onPresenceRef.current = onPresence;
@@ -145,8 +170,6 @@ export function useRelayRealtime({
       safeSetCache(`${STORAGE_CONFIG_KEYS.MESSAGES_PREFIX}${roomIdRef.current}`, messages);
     });
   }).current;
-
-  const [reconnectTick, setReconnectTick] = useState(0);
 
   useEffect(() => {
     if (!supabase) return;
@@ -166,7 +189,7 @@ export function useRelayRealtime({
     const handleEvent = (ev: RelayEvent) => {
       const { type, data } = ev;
       if (type === 'system') {
-        if (data?.status === 'error') {
+        if (data.status === 'error') {
           // 半死 / RLS 失效：断开并重建
           client?.close();
           reconnect();
@@ -180,19 +203,20 @@ export function useRelayRealtime({
         return;
       }
       if (type === 'broadcast') {
-        const rid = data.roomId;
-        const event = data.event;
-        const payload = data.payload;
+        const rid = asString(data.roomId);
+        const event = asString(data.event);
+        const payload = asRecord(data.payload);
         if (!rid || rid === '__global__') {
           // 全局 chat-events（Worker 把 chat-events 映射成 __global__）
           if (event === 'room-updated') onRoomUpdatedRef.current?.();
-          else if (event === 'new-dm') onNewDMRef.current?.(payload?.roomId);
+          else if (event === 'new-dm') onNewDMRef.current?.(asString(payload.roomId));
           return;
         }
         if (rid !== roomIdRef.current) return;
         switch (event) {
           case 'typing-start': {
-            const typer = payload?.user as string;
+            const typer = asString(payload.user);
+            if (!typer) break;
             setTypingUsersRef.current((prev) => (prev.includes(typer) ? prev : [...prev, typer]));
             const existing = typingTimersRef.current.get(typer);
             if (existing) clearTimeout(existing);
@@ -206,7 +230,8 @@ export function useRelayRealtime({
             break;
           }
           case 'typing-stop': {
-            const typer = payload?.user as string;
+            const typer = asString(payload.user);
+            if (!typer) break;
             setTypingUsersRef.current((prev) => prev.filter((u) => u !== typer));
             const existing = typingTimersRef.current.get(typer);
             if (existing) {
@@ -215,47 +240,43 @@ export function useRelayRealtime({
             }
             break;
           }
-          case 'withdraw-message': {
-            const withdrawId = payload?.id as string;
-            setMessagesRef.current((prev) => {
-              const updated = prev.map((m) =>
-                m.id === withdrawId ? { ...m, withdrawn_at: new Date().toISOString() } : m
-              );
-              scheduleCacheWrite(updated);
-              return updated;
-            });
-            break;
-          }
+          case 'withdraw-message':
           case 'edit-message': {
-            const { id, content, edited_at } = payload as {
-              id: string;
-              content: string;
-              edited_at: string;
-            };
-            setMessagesRef.current((prev) => {
-              const updated = prev.map((m) => (m.id === id ? { ...m, content, edited_at } : m));
-              scheduleCacheWrite(updated);
-              return updated;
-            });
+            // ⚠️ 广播只当「有变更」的提示，**绝不**用 payload 里的 content 直接改写本地消息。
+            // 原因：服务端虽已校验「必须是消息作者本人」，但作者仍可以广播一份与
+            // 数据库不一致的内容（先正常 PUT 再广播伪造文案）。正文一律回源 DB。
+            const id = asString(payload.id);
+            if (id) onAuthoritativeUpdateRef.current?.(id);
             break;
           }
-          case 'receipt':
-            receiptHandlerRef.current?.(payload as { messageIds?: string[] });
+          case 'receipt': {
+            const ids = Array.isArray(payload.messageIds)
+              ? (payload.messageIds as string[])
+              : undefined;
+            dispatchReceipt({ messageIds: ids });
             break;
+          }
           case 'room-deleted':
-            if (payload?.roomId === roomIdRef.current) onRoomDeletedRef.current?.(payload.roomId);
+            if (asString(payload.roomId) === roomIdRef.current) {
+              onRoomDeletedRef.current?.(roomIdRef.current);
+            }
             break;
-          case 'chat-reaction':
-            if (payload?.messageId)
-              onReactionRef.current?.(payload.messageId, (payload.reactions as Reaction[]) || []);
+          case 'chat-reaction': {
+            const messageId = asString(payload.messageId);
+            if (!messageId) break;
+            const reactions = Array.isArray(payload.reactions)
+              ? (payload.reactions as Reaction[])
+              : [];
+            onReactionRef.current?.(messageId, reactions);
             break;
+          }
         }
         return;
       }
       // message-insert / message-update（postgres_changes / CDC）
-      const rid = data.roomId;
-      const row = data.row;
-      if (!row) return;
+      const rid = asString(data.roomId);
+      if (!data.row || typeof data.row !== 'object') return;
+      const row = data.row as Record<string, unknown>;
       if (rid !== roomIdRef.current) {
         // 后台房间
         if (type === 'message-insert') onExternalMessageRef.current?.(rid, rowToMessage(row));
@@ -266,7 +287,7 @@ export function useRelayRealtime({
         // 当前房间 UPDATE：撤回 / 编辑
         const withdrawn = row.withdrawn_at;
         const edited = row.edited_at;
-        const id = row.id as string;
+        const id = asString(row.id);
         setMessagesRef.current((prev) => {
           const updated = prev.map((m) => {
             if (m.id !== id) return m;
@@ -282,7 +303,7 @@ export function useRelayRealtime({
         return;
       }
       // message-insert（当前房间）
-      const msg = rowToMessage(row as Record<string, unknown>);
+      const msg = rowToMessage(row);
       setMessagesRef.current((prev) => {
         if (prev.some((m) => m.id === msg.id) || processedIdsRef.current.has(msg.id)) return prev;
         processedIdsRef.current.add(msg.id);
@@ -310,23 +331,44 @@ export function useRelayRealtime({
 
     const connect = async () => {
       if (closed) return;
-      const { data } = await sb.auth.getSession();
-      const token = data.session?.access_token;
+      // ⚠️ getSession() 必须包 try/catch：
+      // 它内部可能走 refresh_token 请求，Supabase Auth 抖动 / JWT 被拒时会 **reject**。
+      // 若不接住，connect() 这个 async 函数就以未捕获的 rejection 结束，
+      // reconnect() 永远不会被调度 —— 表现为「实时彻底失联且再也不恢复」：
+      // 收不到新消息、在线状态永远停在旧值，直到用户手动切换房间 / 刷新页面。
+      let token = '';
+      try {
+        const { data } = await sb.auth.getSession();
+        token = data.session?.access_token || '';
+      } catch {
+        reconnect();
+        return;
+      }
       if (!token) {
         reconnect();
         return;
       }
       currentToken = token;
       const allRooms = Array.from(new Set([roomIdRef.current, ...roomIds])).filter(Boolean);
+      // 先释放旧连接：否则 onError 连续触发时会并发建立多条 SSE，
+      // 而每条 SSE 在服务端都对应一条到 Supabase 的 WebSocket → 连接泄漏。
+      try {
+        client?.close();
+      } catch {
+        /* ignore */
+      }
+      // presence 身份不再由客户端自报（服务端从 token 解出），故这里不传 userId/guid/nickname
       client = connectRelay({
         proxyUrl,
         token,
         apikey,
         rooms: allRooms,
-        userId: currentUserRef.current ? `user-${currentUserRef.current.trim()}` : '',
-        nickname: currentUserRef.current,
-        guid: myIdRef.current,
         onEvent: handleEvent,
+        onOpen: () => {
+          // 连上才复位退避计数。否则一次早期抖动会让 attempt 永久停在 5，
+          // 之后所有重连都被钉死在 30s 间隔（表现为「断网恢复后很久才重连上」）。
+          attempt = 0;
+        },
         onError: () => reconnect(),
       });
       // 首次连上后补一次漏掉的消息（覆盖重连间隙）
@@ -335,9 +377,14 @@ export function useRelayRealtime({
 
     const reconnect = () => {
       if (closed) return;
+      // 已有待执行的重连就不要再排一个，避免定时器堆积 → 多路并发连接
+      if (reconnectTimer) return;
       attempt += 1;
       const backoff = Math.min(1000 * 2 ** Math.min(attempt, 5), 30000);
-      reconnectTimer = setTimeout(connect, backoff);
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, backoff);
     };
 
     connect();
@@ -347,6 +394,10 @@ export function useRelayRealtime({
       const { data } = await sb.auth.getSession();
       const token = data.session?.access_token;
       if (token && token !== currentToken && client) {
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
         client.close();
         attempt = 0;
         connect();
@@ -361,7 +412,7 @@ export function useRelayRealtime({
       client?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomId, roomIds.join(','), reconnectTick]);
+  }, [roomId, roomIds.join(',')]);
 
   /**
    * 通过服务端中继发一条 broadcast。
@@ -369,7 +420,7 @@ export function useRelayRealtime({
    *            （用于 room-updated / new-dm）。
    */
   const sendBroadcast = useCallback(
-    async (rid: string, event: string, payload: any) => {
+    async (rid: string, event: string, payload: Record<string, unknown>) => {
       if (!supabase) return;
       try {
         const { data } = await supabase.auth.getSession();
@@ -391,5 +442,5 @@ export function useRelayRealtime({
     []
   );
 
-  return { reconnectTick, sendBroadcast };
+  return { sendBroadcast };
 }

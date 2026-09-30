@@ -71,13 +71,15 @@ export function LightboxProvider({
   );
 
   const isOpen = index !== null;
-  const current = isOpen ? images[index as number] : '';
+  const current = index !== null ? images[index] ?? '' : '';
   const signedUrl = useSignedUrl(current);
 
   // Save image: open in new tab so user can long-press to save (works in WebView)
   const handleSave = useCallback(() => {
     if (signedUrl) {
-      window.open(signedUrl, '_blank');
+      // P3：补 `noopener,noreferrer` —— 否则新窗口能通过 `window.opener` 反向操作本页
+      // （反向 tabnabbing）。同文件其它外链与 TextMessage 已用 rel="noopener noreferrer"。
+      window.open(signedUrl, '_blank', 'noopener,noreferrer');
     }
   }, [signedUrl]);
 

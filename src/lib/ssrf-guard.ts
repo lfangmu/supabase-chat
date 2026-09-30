@@ -17,7 +17,8 @@ function isInternalHost(hostname: string): boolean {
   // IPv4 check
   const ipv4Match = lower.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (ipv4Match) {
-    const [, a, b] = ipv4Match.map(Number);
+    // 正则已保证 4 组数字；默认值 -1 不会命中任何内网网段，因此不会误判为「内部地址」
+    const [a = -1, b = -1] = ipv4Match.slice(1, 5).map(Number);
     // 10.x.x.x
     if (a === 10) return true;
     // 172.16-31.x.x

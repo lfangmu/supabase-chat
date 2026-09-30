@@ -20,6 +20,14 @@ describe('date-utils', () => {
       const key2 = getDateKey('2025-06-23T14:30:00.000Z');
       expect(key1).toBe(key2);
     });
+
+    // 回归：realtime 负载若丢失 timestamp（历史上 relay 误传 CDC 信封导致），
+    // 不能产出 "NaN-NaN-NaN"，必须返回空串以便上层跳过该分隔线。
+    it('should return empty string for invalid timestamp', () => {
+      expect(getDateKey('invalid')).toBe('');
+      expect(getDateKey('')).toBe('');
+      expect(getDateKey(undefined as unknown as string)).toBe('');
+    });
   });
 
   describe('isSameDay', () => {
@@ -61,6 +69,13 @@ describe('date-utils', () => {
       expect(result).toContain('2020');
       expect(result).toContain('年');
     });
+
+    // 回归：Invalid Date 绝不能渲染出「NaN年NaN月NaN日 undefined」。
+    it('should return empty string for Invalid Date', () => {
+      expect(formatDateSeparator(new Date('invalid'))).toBe('');
+      expect(formatDateSeparator(new Date(NaN))).toBe('');
+      expect(formatDateSeparator(undefined as unknown as Date)).toBe('');
+    });
   });
 
   describe('formatDateSeparatorFromTimestamp', () => {
@@ -74,6 +89,14 @@ describe('date-utils', () => {
       // Invalid date should not throw
       const result = formatDateSeparatorFromTimestamp('invalid');
       expect(typeof result).toBe('string');
+    });
+
+    // 回归：非字符串 / 缺失 timestamp 也必须返回空串，而不是含 NaN 的脏字符串。
+    it('should return empty string for invalid/missing timestamps', () => {
+      expect(formatDateSeparatorFromTimestamp('invalid')).toBe('');
+      expect(formatDateSeparatorFromTimestamp('')).toBe('');
+      expect(formatDateSeparatorFromTimestamp(undefined as unknown as string)).toBe('');
+      expect(formatDateSeparatorFromTimestamp('invalid')).not.toContain('NaN');
     });
   });
 });

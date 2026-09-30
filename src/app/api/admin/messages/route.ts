@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/service-client';
-import { getAuthUser } from '@/lib/auth-user';
+import { requireAdmin } from '@/lib/admin-auth';
+import { isValidRoomId } from '@/lib/validate';
 import { MESSAGE_CONFIG } from '@/config';
 import { logAdminAction, getClientIpFromRequest } from '@/lib/audit';
 
@@ -10,17 +11,12 @@ export const runtime = 'edge';
 /**
  * GET /api/admin/messages?roomId=xxx[&before=ISO] — 管理后台：只读查看某房间消息（游标分页）。
  *
- * 鉴权：middleware 已确保调用者为 users.role='admin'。这里再解析 actor 兜底校验一次。
+ * 鉴权（P1-3）：requireAdmin 路由内独立校验 role='admin'（不再只解析 actor）。
  */
 export async function GET(request: NextRequest) {
   try {
-    const actor = await getAuthUser(request);
-    if (!actor) {
-      return NextResponse.json(
-        { success: false, message: '未认证的管理员会话' },
-        { status: 401 }
-      );
-    }
+    const auth = await requireAdmin(request);
+    if (!auth.ok) return auth.response;
 
     const { searchParams } = new URL(request.url);
     const roomId = searchParams.get('roomId');
@@ -33,7 +29,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    if (!/^[a-zA-Z0-9\u4e00-\u9fff_:-]+$/.test(roomId) || roomId.length > 200) {
+    if (!isValidRoomId(roomId)) {
       return NextResponse.json(
         { success: false, message: '无效的群聊 ID' },
         { status: 400 }
@@ -77,16 +73,14 @@ export async function GET(request: NextRequest) {
 /**
  * DELETE /api/admin/messages — 管理后台：删除某房间内的单条消息（社区 moderation）。
  *
- * 鉴权：middleware 已确保调用者为 admin。数据安全：先按 id 取消息确认属于该 room
- * （防止跨房间误删/越权删），快照内容用于审计，再用 service_role 删除。删除成功/失败
- * 均写入 audit_logs（delete_message / delete_message_failed）。
+ * 鉴权（P1-3）：requireAdmin 路由内独立校验 role='admin'（不再只解析 actor）。
+ * 数据安全：先按 id 取消息确认属于该 room（防止跨房间误删/越权删），快照内容用于审计，
+ * 再用 service_role 删除。删除成功/失败均写入 audit_logs。
  */
 export async function DELETE(request: NextRequest) {
   try {
-    const actor = await getAuthUser(request);
-    if (!actor) {
-      return NextResponse.json({ success: false, message: '未认证的管理员会话' }, { status: 401 });
-    }
+    const auth = await requireAdmin(request);
+    if (!auth.ok) return auth.response;
 
     const body = await request.json().catch(() => ({}));
     const roomId = body?.roomId;
@@ -94,7 +88,7 @@ export async function DELETE(request: NextRequest) {
     if (!roomId || !messageId || typeof roomId !== 'string' || typeof messageId !== 'string') {
       return NextResponse.json({ success: false, message: '缺少 roomId 或 messageId' }, { status: 400 });
     }
-    if (!/^[a-zA-Z0-9一-龥_:-]+$/.test(roomId) || roomId.length > 200) {
+    if (!isValidRoomId(roomId)) {
       return NextResponse.json({ success: false, message: '无效的群聊 ID' }, { status: 400 });
     }
 

@@ -15,7 +15,19 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
  * Centralised here so the ~16 route handlers no longer each re-declare their
  * own `getClient()` copy.
  */
+/**
+ * 进程内单例（P3）。
+ *
+ * 此前每次调用都 `createClient()` —— 一个 route handler 里常常调用 2~4 次
+ * （先查权限、再读写、再写审计），每次都重建一整套 fetch/auth/realtime 子系统，
+ * 既浪费内存又让 keep-alive 连接无法复用。
+ * Edge/Node 运行时里模块作用域在同一个 isolate 内是持久的，缓存一次即可。
+ */
+let cached: SupabaseClient | null = null;
+
 export function getServiceClient(): SupabaseClient {
+  if (cached) return cached;
+
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url) {
@@ -28,5 +40,6 @@ export function getServiceClient(): SupabaseClient {
         'Set SUPABASE_SERVICE_ROLE_KEY in your environment.'
     );
   }
-  return createClient(url, key);
+  cached = createClient(url, key);
+  return cached;
 }

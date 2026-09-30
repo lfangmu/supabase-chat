@@ -3,7 +3,7 @@
 import React, { useCallback, useState, useRef, useMemo, useEffect } from 'react';
 import { useChat } from '@/hooks/useChat';
 import {
-  Upload, X, ArrowRight, MessageCircle, Users, User as UserIcon, Plus, Search,
+  Upload, X, MessageCircle, Users, User as UserIcon, Plus, Search,
 } from 'lucide-react';
 import MessageList from '@/components/chat/MessageList';
 import MessageInput from '@/components/chat/MessageInput';
@@ -13,6 +13,7 @@ import LightboxProvider from '@/components/chat/Lightbox';
 import AddFriendModal from '@/components/chat/AddFriendModal';
 import ContactsPage from '@/components/chat/ContactsPage';
 import MePage from '@/components/chat/MePage';
+import UserProfileCard from '@/components/chat/UserProfileCard';
 import GlobalSearchModal from '@/components/chat/GlobalSearchModal';
 import CreateGroupModal from '@/components/chat/CreateGroupModal';
 import GroupMembersPanel from '@/components/chat/GroupMembersPanel';
@@ -30,6 +31,7 @@ import { showSuccess, showError } from '@/utils/errorHandler';
 import { removeJoinedRoom } from '@/utils/joinedRooms';
 import { ROOM_CONFIG, STORAGE_CONFIG_KEYS } from '@/config';
 import type { CurrentUser } from '@/lib/identity';
+import { mediaPlaceholder } from '@/utils/labels';
 
 interface ChatAppProps {
   /** Supabase Auth 会话身份（UUID + 展示名），由 ChatClient 探测会话后传入 */
@@ -53,7 +55,7 @@ export default function ChatApp({ currentUser, onLogout, onIdentityRefresh }: Ch
     globalOnlineIds,
     globalOnlineNicknames,
     quotedMessage, setQuotedMessage,
-    handleMessageChange, handleSendText, handleFileChange, handleVoiceUpload,
+    handleMessageChange, handleSendText, handleFileChange, handleVoiceUpload, uploadFile,
     loadMoreHistory, refreshMessages, retryMessage, handleWithdraw, handleEditMessage,
     switchRoom, createRoom, joinRoom,
     unreadRoomIds, draftSaved,
@@ -138,6 +140,8 @@ export default function ChatApp({ currentUser, onLogout, onIdentityRefresh }: Ch
 
   // Add-friend (DM) modal state
   const [showAddFriend, setShowAddFriend] = useState(false);
+  // 个人资料卡（点击头像打开）：{ userId, name }
+  const [profileCard, setProfileCard] = useState<{ userId: string; name: string } | null>(null);
   // 建群 / 邀请入群
   const [groupModal, setGroupModal] = useState<null | { mode: 'create' | 'invite' }>(null);
   // 群聊信息面板
@@ -194,6 +198,44 @@ export default function ChatApp({ currentUser, onLogout, onIdentityRefresh }: Ch
 
   const handleDeleteMessage = useCallback((id: string) => {
     setDeletedIds(addDeletedMessageId(id));
+  }, []);
+
+  // === P3：把传给 <MessageList>/<MessageInput> 的回调全部 useCallback 化 ===
+  // 这两个组件都用 React.memo 包裹；此前传的是内联箭头函数（每次 render 都是新引用），
+  // 等于把 memo 完全击穿 —— **每敲一个字都会重渲染整个虚拟化消息列表**。
+  const handleQuoteMessage = useCallback((msg: Message) => {
+    setQuotedMessage(msg);
+    // setQuotedMessage 是 useState 的稳定 setter（React 保证引用恒定），无需列入依赖
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleForwardMessage = useCallback((msg: Message) => {
+    setForwardMsg(msg);
+  }, []);
+
+  /**
+   * 输入框 Enter 发送。
+   *
+   * P3 修复：必须过滤**输入法组合态**（`isComposing`）—— 中文/日文输入法下，
+   * 按 Enter 是「确认候选词」，此前会被当成发送，导致消息被半截内容误发出去。
+   * 同时兼容 `keyCode === 229`（部分旧版浏览器/输入法在组合期只报这个）。
+   */
+  const handleInputKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.key !== 'Enter' || e.shiftKey) return;
+      const native = e.nativeEvent as KeyboardEvent & { isComposing?: boolean };
+      if (native.isComposing || native.keyCode === 229) return;
+      e.preventDefault();
+      handleSendText();
+    },
+    [handleSendText]
+  );
+
+  const handleInsertText = useCallback((text: string) => {
+    // 用函数式更新，避免闭包里拿到过期的 message
+    setMessage((prev) => prev + text);
+    // setMessage 同上：useState setter 引用恒定
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /**
@@ -279,26 +321,29 @@ export default function ChatApp({ currentUser, onLogout, onIdentityRefresh }: Ch
     [handleStartDM]
   );
 
-  // Reusable hidden input for paste/drop file handling
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  if (!fileInputRef.current) {
-    fileInputRef.current = document.createElement('input');
-    fileInputRef.current.type = 'file';
-    fileInputRef.current.style.display = 'none';
-  }
+  // 点击头像 → 打开个人资料卡（微信式）。
+  // 依赖为空以保持引用稳定：该回调会一路透传到 MessageItem，若每次 render 都变新引用会击穿 memo。
+  const handleAvatarClick = useCallback((info: { userId?: string; name: string }) => {
+    // 老数据可能没有 UUID（无法定位资料），此时忽略
+    if (!info.userId) return;
+    setProfileCard({ userId: info.userId, name: info.name });
+  }, []);
 
+  // 粘贴 / 拖拽投递文件。
+  //
+  // P3 修复（两处）：
+  //  1. 此前用 `document.createElement('input')` + 伪造 ChangeEvent（`as unknown as
+  //     React.ChangeEvent<HTMLInputElement>` 双重断言）来复用「选择文件」的逻辑 ——
+  //     既在渲染期产生副作用（StrictMode 下泄漏一个游离 DOM 节点），又脆弱难读。
+  //     现在直接调用 `useFileUpload` 暴露的 `uploadFile(file)`。
+  //  2. 保留 FileList 语义：多文件时依次投递（历史上只取第一个，此处保持一致行为）。
   const triggerFileChange = useCallback(
-    (files: FileList) => {
-      const input = fileInputRef.current!;
-      const dt = new DataTransfer();
-      for (let i = 0; i < files.length; i++) dt.items.add(files[i]);
-      input.files = dt.files;
-      handleFileChange({
-        target: input,
-        currentTarget: input,
-      } as unknown as React.ChangeEvent<HTMLInputElement>);
+    (files: FileList | File[]) => {
+      const first = Array.from(files)[0];
+      if (!first) return;
+      void uploadFile(first);
     },
-    [handleFileChange]
+    [uploadFile]
   );
 
   const otherTypingUsers = typingUsers.filter((u) => u !== trimmedUser);
@@ -439,9 +484,11 @@ export default function ChatApp({ currentUser, onLogout, onIdentityRefresh }: Ch
       const items = e.clipboardData?.items;
       if (!items) return;
       for (let i = 0; i < items.length; i++) {
-        if (items[i].type.startsWith('image/')) {
+        const item = items[i];
+        if (!item) continue;
+        if (item.type.startsWith('image/')) {
           e.preventDefault();
-          const file = items[i].getAsFile();
+          const file = item.getAsFile();
           if (file) {
             const dt = new DataTransfer();
             dt.items.add(file);
@@ -600,6 +647,11 @@ export default function ChatApp({ currentUser, onLogout, onIdentityRefresh }: Ch
                     searchQuery={searchQuery}
                     onToggleSearch={toggleSearch}
                     onSearchChange={setSearchQuery}
+                    onOpenDmProfile={
+                      dmOtherUserId
+                        ? () => handleAvatarClick({ userId: dmOtherUserId, name: dmOtherUser || '' })
+                        : undefined
+                    }
                   />
 
                   <MessageList
@@ -614,10 +666,10 @@ export default function ChatApp({ currentUser, onLogout, onIdentityRefresh }: Ch
                     onRefresh={refreshMessages}
                     onWithdraw={handleWithdraw}
                     onRetry={retryMessage}
-                    onQuote={(msg) => setQuotedMessage(msg)}
+                    onQuote={handleQuoteMessage}
                     onEdit={handleEditMessage}
                     onDelete={handleDeleteMessage}
-                    onForward={(msg) => setForwardMsg(msg)}
+                    onForward={handleForwardMessage}
                     isDM={isDM}
                     avatars={avatars}
                     searchQuery={searchQuery}
@@ -627,6 +679,7 @@ export default function ChatApp({ currentUser, onLogout, onIdentityRefresh }: Ch
                     onLoadMessageById={loadMessageById}
                     roomId={roomId}
                     currentUserId={myId}
+                    onAvatarClick={handleAvatarClick}
                   />
 
                   {/* Quote preview */}
@@ -640,12 +693,13 @@ export default function ChatApp({ currentUser, onLogout, onIdentityRefresh }: Ch
                         <div className="text-sm text-foreground truncate">
                           {quotedMessage.type === 'text'
                             ? quotedMessage.content
-                            : `[${quotedMessage.type === 'image' ? '图片' : quotedMessage.type === 'video' ? '视频' : quotedMessage.type === 'voice' ? '语音' : '文件'}]`}
+                            : mediaPlaceholder(quotedMessage.type)}
                         </div>
                       </div>
                       <button
                         onClick={() => setQuotedMessage(null)}
                         className="p-1 text-muted-foreground hover:text-foreground"
+                        aria-label="取消引用"
                       >
                         <X className="w-4 h-4" />
                       </button>
@@ -657,13 +711,13 @@ export default function ChatApp({ currentUser, onLogout, onIdentityRefresh }: Ch
                     uploading={uploading}
                     onlineUsers={mergedOnlineUsers}
                     onMessageChange={handleMessageChange}
-                    onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleSendText())}
+                    onKeyDown={handleInputKeyDown}
                     onFileChange={handleFileChange}
                     onVoiceRecord={handleVoiceUpload}
                     onSend={handleSendText}
                     onPaste={handlePaste}
                     draftSaved={draftSaved}
-                    onInsertText={(t) => setMessage(message + t)}
+                    onInsertText={handleInsertText}
                   />
 
                   {/* Drag-drop overlay */}
@@ -764,8 +818,10 @@ export default function ChatApp({ currentUser, onLogout, onIdentityRefresh }: Ch
               onLeft={() => {
                 setShowMembers(false);
                 setViewingChat(false);
-                switchRoom('default-room');
+                // P3：同文件其它处都用 ROOM_CONFIG.DEFAULT_ROOM，这里此前硬编码字面量
+                switchRoom(ROOM_CONFIG.DEFAULT_ROOM);
               }}
+              onOpenProfile={(m) => handleAvatarClick({ userId: m.id, name: m.name })}
             />
           )}
 
@@ -833,7 +889,7 @@ export default function ChatApp({ currentUser, onLogout, onIdentityRefresh }: Ch
                   <Search className="w-3.5 h-3.5" />
                   {forwardMsg.type === 'text'
                     ? forwardMsg.content
-                    : `[${forwardMsg.type === 'image' ? '图片' : forwardMsg.type === 'video' ? '视频' : forwardMsg.type === 'voice' ? '语音' : '文件'}]`}
+                    : mediaPlaceholder(forwardMsg.type)}
                 </div>
                 <div className="flex-1 overflow-y-auto">
                   {rooms.map((r) => {
@@ -860,6 +916,39 @@ export default function ChatApp({ currentUser, onLogout, onIdentityRefresh }: Ch
               </div>
             </div>
           )}
+          {/* 个人资料卡（点击头像打开，微信式）：按关系给出「发消息 / 接受 / 等待验证 / 添加到通讯录」 */}
+          {profileCard && (
+            <UserProfileCard
+              userId={profileCard.userId}
+              initialName={profileCard.name}
+              isSelf={profileCard.userId === myId}
+              isFriend={friendsData.friends.some((f) => f.id === profileCard.userId)}
+              outgoingPending={friendsData.outgoing.some((o) => o.id === profileCard.userId)}
+              incomingPending={friendsData.incoming.some((i) => i.id === profileCard.userId)}
+              onClose={() => setProfileCard(null)}
+              onSendRequest={async (id) => {
+                const r = await sendRequest(id);
+                await reloadFriends();
+                return r;
+              }}
+              onAccept={async (id) => {
+                const r = await respond(id, 'accept');
+                await reloadFriends();
+                return r;
+              }}
+              onStartDM={(id) => {
+                setProfileCard(null);
+                handleStartDM(id);
+                setViewingChat(true);
+              }}
+              onEditSelf={() => {
+                setProfileCard(null);
+                setListTab('me');
+                if (isMobile) setViewingChat(false);
+              }}
+            />
+          )}
+
         </div>
       </div>
     </LightboxProvider>

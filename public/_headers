@@ -1,17 +1,30 @@
+# Cloudflare Pages 响应头。
+#
+# ⚠️ 这个文件是**线上真正生效**的安全头来源：生产部署走 next-on-pages，
+#    它不会把 next.config.mjs 的 headers() 翻译成 Pages 规则。
+#    改动本文件时请同步 next.config.mjs 里的 securityHeaders（P2-15）。
+#
+# CSP 说明：Next.js 的 hydration 数据与主题引导脚本是内联 <script>，组件里也大量用内联
+# style，因此 script-src / style-src 必须放行 'unsafe-inline'（否则页面白屏）。
+# 这里 CSP 的作用是收敛**外部来源白名单**与禁止被嵌套：
+#   * img/media/connect 只放行 self + Supabase Storage 签名 URL + ImgBB 图床；
+#   * frame-ancestors 'none' / object-src 'none' 阻断点击劫持与插件加载。
+
 /*
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.supabase.co https://i.ibb.co https://ibb.co; media-src 'self' data: blob: https://*.supabase.co https://i.ibb.co https://ibb.co; font-src 'self' data:; connect-src 'self' https://*.supabase.co wss://*.supabase.co; worker-src 'self' blob:; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  Permissions-Policy: camera=(self), microphone=(self), geolocation=(), payment=(), usb=()
 
 # 图片文件缓存配置 - 1天
 /*.jpg, /*.jpeg, /*.png, /*.gif, /*.webp, /*.avif
   Cache-Control: public, max-age=86400, must-revalidate
-  Access-Control-Allow-Origin: *
 
 # 视频文件缓存配置 - 7天
 /*.mp4, /*.webm, /*.ogg, /*.mov
   Cache-Control: public, max-age=604800, must-revalidate
-  Access-Control-Allow-Origin: *
 
 # 静态资源缓存配置 - 1天
 /*.css, /*.js, /*.json
@@ -20,7 +33,6 @@
 # 字体文件缓存配置 - 30天
 /*.woff, /*.woff2, /*.ttf, /*.otf
   Cache-Control: public, max-age=2592000, must-revalidate
-  Access-Control-Allow-Origin: *
 
 # Service Worker 脚本不缓存，确保新版本（实时/鉴权逻辑）立即生效
 /sw.js

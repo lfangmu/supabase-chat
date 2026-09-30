@@ -6,6 +6,7 @@ import { Message } from '@/types';
 import { showError, createError, ErrorType } from '@/utils/errorHandler';
 import { generateId } from '@/utils/id';
 import { UPLOAD_CONFIG, API_CONFIG } from '@/config';
+import { isDocumentMimeType } from '@/lib/file-types';
 
 interface UseFileUploadProps {
   /** 展示名（写入 messages.user，仅展示） */
@@ -21,31 +22,12 @@ interface UploadItem {
   fileName: string;
 }
 
-/** Check if a MIME type is a non-media file type (document/archive/text) */
-function isFileMimeType(mime: string): boolean {
-  const fileTypes = [
-    'application/pdf',
-    'application/msword',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'application/vnd.ms-excel',
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    'application/vnd.ms-powerpoint',
-    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    'application/zip',
-    'application/x-rar-compressed',
-    'text/plain',
-    'text/csv',
-    'application/json',
-  ];
-  return fileTypes.includes(mime);
-}
-
 export const useFileUpload = ({ user, userId, roomId, sendMessage }: UseFileUploadProps) => {
   const [uploading, setUploading] = useState(false);
   const [uploadingMessages, setUploadingMessages] = useState<Map<string, UploadItem>>(new Map());
 
   const compressImage = useCallback((file: File): Promise<File> => {
-    return new Promise<File>((resolve, reject) => {
+    return new Promise<File>((resolve) => {
       new Compressor(file, {
         quality: UPLOAD_CONFIG.IMAGE_COMPRESSION.QUALITY,
         maxWidth: UPLOAD_CONFIG.IMAGE_COMPRESSION.MAX_WIDTH,
@@ -115,6 +97,8 @@ export const useFileUpload = ({ user, userId, roomId, sendMessage }: UseFileUplo
     async (uploadFile: File, onProgress: (p: number) => void): Promise<string> => {
       const formData = new FormData();
       formData.append('image', uploadFile);
+      // P1-7：服务端要求携带房间上下文（否则该端点会沦为登录用户可用的免费图床）
+      formData.append('roomId', roomId);
       onProgress(30);
 
       const response = await fetch(API_CONFIG.UPLOAD_PROXY_ENDPOINT, {
@@ -131,12 +115,19 @@ export const useFileUpload = ({ user, userId, roomId, sendMessage }: UseFileUplo
       onProgress(100);
       return data.url;
     },
-    []
+    [roomId]
   );
 
-  const handleFileChange = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
+  /**
+   * 核心上传流程：接收一个 File，完成校验 → 上传 → 发送消息。
+   *
+   * P3 重构：从原 `handleFileChange(e: ChangeEvent)` 里抽出。
+   * 此前「粘贴 / 拖拽」路径需要伪造一个 `ChangeEvent`（`{target, currentTarget} as unknown as
+   * React.ChangeEvent<HTMLInputElement>` 双重断言）才能复用这段逻辑 —— 既脆弱又难读。
+   * 现在直接调用本函数即可，调用方无需构造假事件。
+   */
+  const uploadFile = useCallback(
+    async (file: File) => {
       if (!file || uploading || !user.trim()) return;
 
       if (file.size > UPLOAD_CONFIG.MAX_FILE_SIZE) {
@@ -172,7 +163,7 @@ export const useFileUpload = ({ user, userId, roomId, sendMessage }: UseFileUplo
         let fileUrl: string;
         const isImage = file.type.startsWith('image/');
         const isAudio = file.type.startsWith('audio/');
-        const isGenericFile = isFileMimeType(file.type);
+        const isGenericFile = isDocumentMimeType(file.type);
 
         // Images < 32MB go to ImgBB (free, effectively unlimited) to save Supabase
         // free-tier 1GB storage; video/audio/large images/files go to Supabase.
@@ -221,10 +212,21 @@ export const useFileUpload = ({ user, userId, roomId, sendMessage }: UseFileUplo
           return next;
         });
         setUploading(false);
-        e.target.value = '';
       }
     },
     [uploading, user, userId, sendMessage, compressImage, formatFileSize, updateProgress, uploadToSupabase, uploadToImgBB]
+  );
+
+  /** `<input type="file">` 的 onChange 包装：取第一个文件后交给 `uploadFile`。 */
+  const handleFileChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      // 先重置 value，允许「连续两次选同一个文件」都能触发 change
+      e.target.value = '';
+      void uploadFile(file);
+    },
+    [uploadFile]
   );
 
   const handleVoiceUpload = useCallback(
@@ -279,6 +281,8 @@ export const useFileUpload = ({ user, userId, roomId, sendMessage }: UseFileUplo
     uploadingMessages,
     handleFileChange,
     handleVoiceUpload,
+    /** 供粘贴 / 拖拽路径直接投递文件（无需伪造 ChangeEvent） */
+    uploadFile,
     formatFileSize,
   };
 };

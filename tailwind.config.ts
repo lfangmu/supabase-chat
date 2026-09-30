@@ -1,7 +1,7 @@
 import type { Config } from "tailwindcss";
 
 const config = {
-  content: ["./src/**/*.{ts,tsx}", "./src/components/**/*.{ts,tsx}"],
+  content: ["./src/**/*.{ts,tsx}"],
   prefix: "",
   safelist: [
     "bg-background", "bg-card", "bg-primary", "bg-secondary",

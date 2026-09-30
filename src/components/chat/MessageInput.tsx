@@ -10,17 +10,31 @@ import { showError } from '@/utils/errorHandler';
 
 /** Check if an audio blob is silent (RMS below threshold) */
 async function checkAudioSilence(blob: Blob): Promise<boolean> {
+  let ctx: AudioContext | null = null;
   try {
-    const ctx = new AudioContext();
+    ctx = new AudioContext();
     const buffer = await ctx.decodeAudioData(await blob.arrayBuffer());
     const data = buffer.getChannelData(0);
     let sum = 0;
-    for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+    for (let i = 0; i < data.length; i++) {
+      const sample = data[i] ?? 0;
+      sum += sample * sample;
+    }
     const rms = Math.sqrt(sum / data.length);
-    await ctx.close();
     return rms < 0.005; // Threshold: very quiet
   } catch {
     return false; // If analysis fails, assume not silent
+  } finally {
+    // P3 修复：此前 `await ctx.close()` 写在 try 内，一旦 `decodeAudioData` 抛错
+    // （非音频 blob / 解码失败）就永远不会 close → 每次失败都泄漏一个 AudioContext，
+    // 累计到浏览器硬上限后所有声音相关功能都会失效。改到 finally 里保证释放。
+    if (ctx) {
+      try {
+        await ctx.close();
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }
 
@@ -53,6 +67,7 @@ const MessageInput: React.FC<MessageInputProps> = React.memo(({
   draftSaved = false,
 }) => {
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const emojiBtnRef = useRef<HTMLButtonElement>(null);
   const [voiceMode, setVoiceMode] = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
 
@@ -77,7 +92,7 @@ const MessageInput: React.FC<MessageInputProps> = React.memo(({
   const lastAt = textBeforeCursor.lastIndexOf('@');
   const mentionQuery =
     lastAt !== -1 &&
-    (lastAt === 0 || /\s/.test(textBeforeCursor[lastAt - 1])) &&
+    (lastAt === 0 || /\s/.test(textBeforeCursor[lastAt - 1] ?? '')) &&
     !textBeforeCursor.slice(lastAt + 1).includes(' ')
       ? textBeforeCursor.slice(lastAt + 1)
       : null;
@@ -208,6 +223,7 @@ const MessageInput: React.FC<MessageInputProps> = React.memo(({
     if (uploading) return;
     e.preventDefault();
     const touch = e.touches[0];
+    if (!touch) return;
     touchStartYRef.current = touch.clientY;
     touchStartXRef.current = touch.clientX;
     touchStartTimeRef.current = Date.now();
@@ -220,6 +236,7 @@ const MessageInput: React.FC<MessageInputProps> = React.memo(({
     if (!isPressingRef.current) return;
     e.preventDefault();
     const touch = e.touches[0];
+    if (!touch) return;
     const diffY = touchStartYRef.current - touch.clientY;
     const diffX = Math.abs(touchStartXRef.current - touch.clientX);
     if (diffY > 30 && diffX < 80) {
@@ -434,6 +451,7 @@ const MessageInput: React.FC<MessageInputProps> = React.memo(({
               />
               <button
                 type="button"
+                ref={emojiBtnRef}
                 onClick={toggleEmoji}
                 className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground rounded-full transition-colors"
                 aria-label="表情"
@@ -465,9 +483,11 @@ const MessageInput: React.FC<MessageInputProps> = React.memo(({
         )}
       </div>
 
-      {/* Emoji picker */}
+      {/* Emoji picker（portal 到 body，脱离 overflow:hidden 裁剪，避免「表情包只显示一半」） */}
       {showEmoji && (
         <EmojiPicker
+          anchorRef={emojiBtnRef}
+          placement="top"
           onSelect={handleEmojiSelect}
           onClose={() => setShowEmoji(false)}
         />

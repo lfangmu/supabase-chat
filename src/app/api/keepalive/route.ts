@@ -12,10 +12,13 @@ export const runtime = 'edge';
 // 请先到 Supabase Dashboard 手动 Restore 一次，之后本端点（配合监控）即可持续保活。
 export async function GET() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceRole =
-    process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_KEY;
+  // P2-12：不再回退到 anon/publishable key —— 与 `src/lib/service-client.ts` 的
+  // 「fail-loud」原则一致。静默降级到 anon key 会掩盖配置错误，
+  // 并且让「保活」这件事在 RLS 收紧后悄悄失效（anon 读不到 messages）。
+  const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!url || !serviceRole) {
+    console.error('keepalive: 缺少 NEXT_PUBLIC_SUPABASE_URL 或 SUPABASE_SERVICE_ROLE_KEY');
     return NextResponse.json(
       { ok: false, error: 'missing supabase env' },
       { status: 500 }
@@ -28,8 +31,11 @@ export async function GET() {
     .select('count', { count: 'exact', head: true });
 
   if (error) {
+    // P2-12：本端点是**未认证**的公开路径，绝不能把 DB 错误原文（可能含表名、
+    // 连接串片段、Supabase 项目状态等）返回给调用方 —— 只记服务端日志。
+    console.error('keepalive: DB 查询失败', error.message);
     return NextResponse.json(
-      { ok: false, error: error.message },
+      { ok: false, error: 'database unavailable' },
       { status: 503 }
     );
   }
