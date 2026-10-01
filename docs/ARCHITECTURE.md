@@ -88,7 +88,7 @@
 
 - **数据库即真相源**：消息必须经 `POST /api/messages`（服务端校验 `isRoomParticipant` + `user === actor`）落入 `messages` 表，才会被推送。客户端无法凭空注入一条「已落库」的行。
 - **RLS 按房间成员过滤**：中继以服务端身份订阅，但浏览器侧订阅仍受 RLS 约束；`messages` 表的 SELECT 策略仅允许房间成员读取，非成员收不到行。
-- **零密钥**：不再需要 Ed25519 签名私钥 / 前端公钥，也不再有 `broadcast-message` Edge Function 与 `/api/realtime-token`。实时鉴权直接用 Supabase Auth 会话。
+- **鉴权即会话**：实时订阅的鉴权直接使用 Supabase Auth 会话，无需额外签发密钥或专用 token 端点。
 
 ### 4.3 幂等写入
 
@@ -109,7 +109,8 @@
 `src/app/api/{rest,auth,storage}/v1/[[...path]]` 把 REST / Auth / Storage 透传到真实 Supabase 项目（见 `src/lib/supabaseProxy.ts`），使浏览器全程只访问自己的域名。
 
 - 代理目标 host 由 `NEXT_PUBLIC_SUPABASE_URL` 自动推导，**生产 / 预览指向不同 Supabase 项目也能正确转发**。
-- **不再需要独立的 Worker 项目**：代理与前端是同一个 Pages 项目。`NEXT_PUBLIC_SUPABASE_PROXY_URL` 只填应用自身的同源前缀 `https://<你的域名>/api`。
+- 代理与前端是**同一个 Pages 项目**：`NEXT_PUBLIC_SUPABASE_PROXY_URL` 填应用自身的同源前缀 `https://<你的域名>/api`。
+- **该变量是可选的**：`src/lib/supabase.ts` 取 `PROXY_URL || SUPABASE_URL`，留空时浏览器直连 `NEXT_PUBLIC_SUPABASE_URL`。只在网络会拦截 `*.supabase.co`（如中国大陆）时才需要启用代理。
 - 仅服务端（`supabase-server.ts`、middleware、回调路由）直连真实的 `NEXT_PUBLIC_SUPABASE_URL`；浏览器走同源代理，两者指向**同一真实项目**。
 
 部署后用 `curl https://<你的域名>/api/health` 验证返回 `200` 且 `sameOrigin: true`。
@@ -147,7 +148,6 @@
 | `message_reads` | `message_id`, `user_id`, `read_at` | 已读回执 |
 | `friends` | `user_id`, `friend_id`, `status` | 好友关系 / 申请 |
 | `audit_logs` | `id`, `actor_id`, `action`, `target`, `created_at` | 管理操作审计 |
-| `push_subscriptions` | `id`, `user_id`, `endpoint`, `p256dh`, `auth` | 预留（Web Push **尚未接入**） |
 
 **迁移**：`supabase/migrations/00001` ~ `00027`。关键节点：
 
@@ -184,7 +184,7 @@
 
 - **目标**：Cloudflare Pages，`@cloudflare/next-on-pages`。
 - **构建命令**：`npm run cf:build`；输出 `.vercel/output/static`。
-- **环境变量**：必填 `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_KEY` / `NEXT_PUBLIC_SUPABASE_PROXY_URL` / `SUPABASE_SERVICE_ROLE_KEY`；可选 `IMGBB_API_KEY` / `NEXT_DISABLE_VERSION_CHECK`。鉴权不再需要任何密码或 JWT 密钥（由 Supabase Auth 承担）。
+- **环境变量**：必填 `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_KEY` / `SUPABASE_SERVICE_ROLE_KEY`；可选 `NEXT_PUBLIC_SUPABASE_PROXY_URL`（仅在浏览器无法直连 `*.supabase.co` 时才需要）/ `IMGBB_API_KEY` / `NEXT_DISABLE_VERSION_CHECK`。鉴权由 Supabase Auth 承担。
 - ⚠️ `NEXT_PUBLIC_*` 是**构建期内联**的：新增 / 修改环境变量后必须**全新构建**（push 或控制台 Deploy），只点 Retry 不会注入新变量。
 - 完整流程见 `docs/DEPLOYMENT.md`。
 

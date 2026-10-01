@@ -1,11 +1,11 @@
 // Supabase 反向代理（同源 Pages Functions 版）
 //
 // 原本这是独立的 Cloudflare Worker（supabase-proxy）做的事：让浏览器只访问自己的
-// 同源域名（chat.example.com），由这里把 REST / Auth / Storage 请求转发到真实 Supabase
-// 项目，绕开国内对 *.supabase.co 的网络层拦截。实时（SSE 中继 + 发送）见 realtimeProxy.ts。
+// 应用域名，由这里把 REST / Auth / Storage 请求转发到真实 Supabase
+// 项目，绕开会拦截 *.supabase.co 的网络环境。实时（SSE 中继 + 发送）见 realtimeProxy.ts。
 //
 // 现在把它折叠进 supabase-chat 同一个 Pages 项目，同源部署：
-//   浏览器 supabase 客户端 base = https://chat.example.com/api
+//   浏览器 supabase 客户端 base = https://<你的应用域名>/api
 //   → /api/rest/v1/*   → https://<REF>.supabase.co/rest/v1/*
 //   → /api/auth/v1/*   → https://<REF>.supabase.co/auth/v1/*
 //   → /api/storage/v1/*→ https://<REF>.supabase.co/storage/v1/*
@@ -13,7 +13,8 @@
 // 目标 host 必须从「应用真实项目地址」NEXT_PUBLIC_SUPABASE_URL 推导，绝不能硬编码。
 // 原因：生产 / 预览环境指向的是不同的 Supabase 项目（ref 不同）；同源代理只是把浏览器请求
 // 转发到"应用本身使用的那个真实项目"，所以以 NEXT_PUBLIC_SUPABASE_URL 为准。
-// （项目 ref 仍是公开信息，非密钥；保留一个 prod 值作为兜底，仅当环境变量缺失时生效。）
+// 兜底值只用于「环境变量缺失」时让类型/形状仍然合法（例如单测），它指向的不是任何真实项目，
+// 部署与运行都必须由 NEXT_PUBLIC_SUPABASE_URL 提供真实地址，否则代理请求必然失败。
 const TARGET_URL =
   process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://your-project-ref.supabase.co';
 export const SUPABASE_TARGET_HOST = TARGET_URL.replace(/^https?:\/\//, '')
@@ -161,7 +162,7 @@ export async function proxySupabase(
     const resp = await fetch(target.toString(), init);
     const out = new Headers(resp.headers);
     // 同源部署下，让 @supabase/ssr 从响应体自行管理会话 cookie；
-    // 剥离上游 Set-Cookie（其 domain 是 supabase.co，浏览器无法为 chat.example.com 写入）。
+    // 剥离上游 Set-Cookie（其 domain 是 supabase.co，浏览器无法为自己的应用域名写入）。
     out.delete('set-cookie');
     for (const [k, v] of Object.entries(corsHeaders(request))) out.set(k, v);
     for (const [k, v] of Object.entries(dbgHeaders)) out.set(k, v);

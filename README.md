@@ -122,14 +122,13 @@ npm run dev                     # http://localhost:3000
 |---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase 项目 → **Project Overview** 首页顶部（项目名下方带 Copy 按钮的 URL，形如 `https://<ref>.supabase.co`） |
 | `NEXT_PUBLIC_SUPABASE_KEY` / `SUPABASE_SERVICE_ROLE_KEY` | 同项目 → **Project Settings → API Keys**：**Publishable key**（`sb_publishable_…`，公开、可进浏览器）与 **Secret key**（`sb_secret_…`；保密，仅服务端用，切勿加 `NEXT_PUBLIC_` 前缀） |
-| `NEXT_PUBLIC_SUPABASE_PROXY_URL` | 同源反向代理前缀，固定为 `https://<你的应用域名>/api`（见 [docs/DEPLOYMENT.md §3.5](docs/DEPLOYMENT.md)） |
+| `NEXT_PUBLIC_SUPABASE_PROXY_URL` | **可选**。同源反向代理前缀，填 `https://<你的应用域名>/api`（见 [docs/DEPLOYMENT.md §3.5](docs/DEPLOYMENT.md)）。**能直连 `*.supabase.co` 时可留空**，浏览器会直连项目地址；仅当网络会拦截 `*.supabase.co`（如中国大陆）时才需要配 |
 | `IMGBB_API_KEY` | ImgBB 图片代理上传 key（可选） |
-| `SUPABASE_PROJECT_REF` | Supabase Dashboard → **Project Settings → General** → Project ID / Reference ID（仅本地 `supabase` CLI 用；关联仓库后 CI 不再需要） |
-| `SUPABASE_ACCESS_TOKEN` | Supabase 头像菜单 → **Account → Access Tokens** → 新建（仅本地 `supabase` CLI 用；采用 Supabase GitHub App 关联仓库后 CI 不再需要） |
-| `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` | **已不需要**（采用 Cloudflare Pages Git 集成，不在仓库配 Cloudflare 密钥）；仅当你改用 `wrangler` CLI 手动部署时才需申请 |
+| `SUPABASE_PROJECT_REF` | Supabase Dashboard → **Project Settings → General** → Project ID / Reference ID（仅本地 `supabase` CLI 使用） |
+| `SUPABASE_ACCESS_TOKEN` | Supabase 头像菜单 → **Account → Access Tokens** → 新建（仅本地 `supabase` CLI 使用） |
 | `KEEPALIVE_URL` / `APP_URL` | 你自己的部署域名，设为仓库 **Variables**（非 Secrets） |
 
-> 鉴权由 **Supabase Auth** 承担，无需任何密码或 JWT 密钥变量。`CHAT_JWT_SECRET` / `SUPABASE_JWT_SECRET` / `CHAT_PASSWORD` / `ADMIN_PASSWORD` 等已随鉴权迁移移除（管理员改由 `public.users.role='admin'` 判定）。
+> 鉴权由 **Supabase Auth** 承担，无需密码或 JWT 密钥变量。
 
 > 标记 **Secrets** 的项在 GitHub 仓库 `Settings → Secrets and variables → Actions → Secrets` 配置；标记 **Variables** 的项在同级 **Variables** 页配置。
 

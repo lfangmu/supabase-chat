@@ -25,7 +25,7 @@ Supabase **内置 SMTP** 的硬限制：
 ## 3. 配置步骤
 
 ### 3.1 注册 Resend
-1. 打开 resend.com/signup，用你自己的邮箱（如 you@example.com）注册；
+1. 打开 resend.com/signup，用你自己的邮箱（如 `you@example.com`）注册；
 2. 完成邮箱验证。
 
 ### 3.2 在 Resend 添加并验证域名
@@ -54,7 +54,7 @@ Supabase **内置 SMTP** 的硬限制：
 |---|---|
 | Enable custom SMTP | 开 |
 | Sender email address | `no-reply@mail.your-domain.com`（须在已验证域名上；`send.` / `resend.` 只是 SPF/DKIM 基础设施，不是发件地址） |
-| Sender name | <你的应用名> |
+| Sender name | 你的应用名（邮件收件人看到的发件人显示名） |
 | Host | `smtp.resend.com` |
 | Port | `465` |
 | Username | `resend` |

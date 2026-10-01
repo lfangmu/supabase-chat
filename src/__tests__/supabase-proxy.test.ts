@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildProxyTargetUrl } from '@/lib/supabaseProxy';
 
+// 只是「本应用自己的域名」的占位，测的是「转发到别处」这个行为，与真实部署地址无关
 const ORIGIN = 'https://chat.example.com';
 
 /** 只断言 pathname + search，避免依赖运行环境的 SUPABASE_URL */

@@ -14,7 +14,7 @@
 //   node scripts/restore-user.mjs <昵称> <新密码> [房间ID ... | ALL]
 //
 // 示例：
-//   node scripts/restore-user.mjs <昵称> <新密码> <房间ID> 默认聊天室
+//   node scripts/restore-user.mjs <昵称> <新密码> <房间ID> <房间ID>
 //   node scripts/restore-user.mjs <昵称> <新密码> ALL
 //
 // 说明：

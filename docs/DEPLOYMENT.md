@@ -1,6 +1,6 @@
 # 部署指南（Deployment）
 
-一份从零开始的部署流程。整体架构：**Cloudflare Pages 托管前端 + Supabase 托管数据库与 Storage**；浏览器经**同源的 Pages Functions**（`src/app/api/*`，详见 §3.5）访问 Supabase，以规避国内对 `*.supabase.co` 的拦截。应用与代理**同一个 Pages 项目**部署，push 到 `main` 即自动上线。
+一份从零开始的部署流程。整体架构：**Cloudflare Pages 托管前端 + Supabase 托管数据库与 Storage**；浏览器默认直连 Supabase；若所在网络会拦截 `*.supabase.co`，可启用**同源的 Pages Functions** 代理（`src/app/api/*`，见 §3.5，**可选**）。应用与代理**同一个 Pages 项目**部署，push 到 `main` 即自动上线。
 
 > 推荐先完成 **Supabase（§2）** 再完成 **Cloudflare（§3）**——因为 Cloudflare 的环境变量里要用到 Supabase 的 Project URL / Publishable key，先建好 Supabase 顺手拿到密钥再填 Cloudflare。
 
@@ -9,7 +9,7 @@
 ## 0. 前置条件
 
 - 一个 GitHub 账号
-- Node.js **≥ 22**（本仓库 `package.json` 的 `engines` 要求；仅本地开发 / 本地构建时需要，纯云端部署不需要）
+- Node.js **≥ 22**（本仓库 `package.json` 的 `engines` 要求；仅本地开发 / 本地构建时需要）
 - 一个你自己的域名（可选；Cloudflare Pages 也提供 `*.pages.dev` 免费子域）
 
 ---
@@ -37,7 +37,7 @@
    - **Project URL**（进入项目后的 **Project Overview** 首页顶部，项目名下方带 **Copy** 按钮，形如 `https://<ref>.supabase.co`）→ `NEXT_PUBLIC_SUPABASE_URL`
    - **Publishable key**（Project Settings → **API Keys**，`sb_publishable_…`，公开、可进浏览器）→ `NEXT_PUBLIC_SUPABASE_KEY`
    - **Secret key**（Project Settings → **API Keys**，`sb_secret_…`，特权、仅服务端、注意保密）→ `SUPABASE_SERVICE_ROLE_KEY`
-   - **Project ID / Reference ID**（Project Settings → **General**）→ 仅本地 CLI 用，CI 不需要
+   - **Project ID / Reference ID**（Project Settings → **General**）→ 仅本地 `supabase` CLI 用
    > 变量名 `SUPABASE_SERVICE_ROLE_KEY` 沿用 Supabase 约定（指 service_role 权限），对应面板里的 **Secret key**；切勿加 `NEXT_PUBLIC_` 前缀。
 
 ### 2.3 创建 Storage 桶
@@ -50,11 +50,11 @@
 2. 设置 **Working directory**（仓库里 `supabase/` 所在的相对路径：仓库根目录直接填 `.`），然后点 **Enable integration**。
 3. 在 GitHub Integration 配置里开启 **Deploy to production**——push 到 `main` 时会自动应用 `supabase/migrations/` 迁移。
 
-> 关联后：push 到 `main` 时 Supabase 自动应用迁移。**GitHub Integration 本身不需要任何 `SUPABASE_*` 仓库密钥**（`SUPABASE_ACCESS_TOKEN` / `SUPABASE_PROJECT_REF` 都不需要）。本项目已不再依赖 Edge Function。
+> 关联后：push 到 `main` 时 Supabase 自动应用迁移，迁移由 Supabase 侧的 GitHub Integration 执行。
 
 ### 2.5 开启 Supabase Auth（仅需一次配置）
 
-实时事件由**服务端中继**投递：服务端以自身身份连 Supabase Realtime，订阅 `postgres_changes` / `broadcast` / `presence`，再经 SSE（`/api/realtime`）推给浏览器——因为国内网络会拦截浏览器直连 `*.supabase.co` 的 WebSocket 升级请求。RLS 里的 `auth.uid()` 来自**真实的 Supabase Auth 会话**，**不再需要任何 JWT 签发密钥**——`SUPABASE_JWT_SECRET` / `CHAT_JWT_SECRET` 均已废弃。
+实时事件由**服务端中继**投递：服务端以自身身份连 Supabase Realtime，订阅 `postgres_changes` / `broadcast` / `presence`，再经 SSE（`/api/realtime`）推给浏览器——因为国内网络会拦截浏览器直连 `*.supabase.co` 的 WebSocket 升级请求。RLS 里的 `auth.uid()` 来自**真实的 Supabase Auth 会话**。
 
 1. Supabase 项目 → **Authentication → Sign In / Providers**，开启：
    - **Email**（邮箱注册 / 登录）
@@ -65,7 +65,7 @@
    ```sql
    update public.users set role = 'admin' where id = '<该用户的 auth.uid()>';
    ```
-   `/api/admin/*` 由中间件按 `role` 校验，不再有独立后台密码。
+   `/api/admin/*` 由中间件按 `role` 校验。
 
 > 迁移 `00022` 会为新注册的 auth 用户自动创建 `public.users` 资料行（`display_name` 取注册时填的昵称 → 邮箱前缀 → `匿名用户`）。
 
@@ -102,13 +102,12 @@ push 一次到 `main`（或等上一步完成后），到：
 |---|---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | ✅ | Supabase Project URL（见 §2.2） |
 | `NEXT_PUBLIC_SUPABASE_KEY` | ✅ | Supabase **Publishable key**（见 §2.2） |
-| `NEXT_PUBLIC_SUPABASE_PROXY_URL` | ✅ | 同源代理前缀（见 §3.5），固定为 `https://<你的应用域名>/api`（如 `https://chat.example.com/api`）；**浏览器经此访问 Supabase**。**必须与应用同源（同一 Pages 项目）。** |
+| `NEXT_PUBLIC_SUPABASE_PROXY_URL` | ⚪ | 同源代理前缀（见 §3.5），填 `https://<你的应用域名>/api`（如 `https://chat.example.com/api`）；**浏览器经此访问 Supabase**，**必须与应用同源（同一 Pages 项目）**。**留空则浏览器直连 `NEXT_PUBLIC_SUPABASE_URL`**，适用于能直连 `*.supabase.co` 的网络。 |
 | `SUPABASE_SERVICE_ROLE_KEY` | ✅ | Supabase **Secret key**（见 §2.2，**保密，切勿加 `NEXT_PUBLIC_` 前缀**） |
 | `IMGBB_API_KEY` | ⚪ | ImgBB 图片代理上传 key（可选，<32MB 走 Supabase Storage） |
 | `NEXT_DISABLE_VERSION_CHECK` | ⚪ | 设为 `1` 关闭 Next.js 版本检查（联网受限环境） |
 
 > 鉴权由 **Supabase Auth** 管理：身份 = `auth.uid()`（UUID），会话 Cookie 由 `@supabase/ssr` 维护。
-> 已废弃并移除的变量：`CHAT_JWT_SECRET`、`SUPABASE_JWT_SECRET`、`CHAT_PASSWORD`、`CHAT_AUTH_ENABLED`、`CHAT_VERSION_SALT`、`ADMIN_PASSWORD`、`SUPER_PASSWORD`、`NEXT_PUBLIC_IMGBB_API_KEY`（管理员改由 `public.users.role='admin'` 判定）。
 > ⚠️ **新增 / 修改环境变量后必须触发全新构建**（push 新提交或控制台 **Deploy**），只点 **Retry** 不会注入新变量。
 
 > **前端改完代码要生效，还有两步（否则浏览器还在跑旧包）**：① 每次重新部署前端后，若改动了客户端逻辑（含会话 cookie 名），去 DevTools → Application → Service Workers → **Unregister** + **Clear storage** + 硬刷新；或把 `public/sw.js` 的 `CACHE_NAME` 递增（如 `supabase-chat-v2`）再部署，让旧缓存自动失效。② 部署后旧登录会话失效，**需重新登录一次**。详见 §3.5。
@@ -119,16 +118,19 @@ push 一次到 `main`（或等上一步完成后），到：
 
 ---
 
-### 3.5 同源反向代理（Pages Functions，国内可达，必选）
+### 3.5 同源反向代理（Pages Functions，可选）
 
-浏览器若直接连 `*.supabase.co` 在国内会被网络层拦截（登录 / 实时全部失败）。本项目把反向代理**折叠进 `supabase-chat` 同一个 Pages 项目**，以同源的 Next.js Route Handlers 部署，浏览器全程只访问你自己的应用域名：
+> **先判断你要不要它**：浏览器能直连 `*.supabase.co`（大部分境外网络、或本地 dev）→ **跳过本节，不设 `NEXT_PUBLIC_SUPABASE_PROXY_URL`**，浏览器直接访问项目地址即可。
+> 浏览器直连 `*.supabase.co` 会被网络层拦截（中国大陆等，表现为登录 / 实时全部失败）→ 按本节配置。
+
+启用时，本项目把反向代理**折叠进 `supabase-chat` 同一个 Pages 项目**，以同源的 Next.js Route Handlers 部署，浏览器全程只访问你自己的应用域名：
 
 - `src/app/api/rest/v1/[[...path]]` / `auth/v1/[[...path]]` / `storage/v1/[[...path]]` —— REST / Auth / Storage 透传到真实 Supabase 项目（见 `src/lib/supabaseProxy.ts`）；
 - `src/app/api/realtime`（SSE 长连接）+ `src/app/api/realtime/send`（POST 发送）—— 实时中继，把「浏览器 ↔ Supabase 的 WebSocket」拆成两段 HTTP，绕开国内 WebSocket 封锁（见 `src/lib/realtimeProxy.ts`）。
 
 代理目标 host 由 `NEXT_PUBLIC_SUPABASE_URL` 自动推导，因此**生产 / 预览指向不同 Supabase 项目也能正确转发**，无需为代理单独维护 host。
 
-> **不再需要独立的 Worker 项目**。`NEXT_PUBLIC_SUPABASE_PROXY_URL` 现在只填应用自身的同源前缀：到 Pages 项目 **Settings → Environment variables**，把该变量（prod + preview）设为 `https://<你的应用域名>/api`（例如 `https://chat.example.com/api`）。因为 `NEXT_PUBLIC_*` 是**构建期内联**的，改完变量后必须**重新部署 Pages**（push 到 `main` 或控制台 **Deploy**）才能生效。
+> `NEXT_PUBLIC_SUPABASE_PROXY_URL` 填应用自身的同源前缀：到 Pages 项目 **Settings → Environment variables**，把该变量（prod + preview）设为 `https://<你的应用域名>/api`（例如 `https://chat.example.com/api`）。因为 `NEXT_PUBLIC_*` 是**构建期内联**的，改完变量后必须**重新部署 Pages**（push 到 `main` 或控制台 **Deploy**）才能生效。
 
 > 仅服务端（`src/lib/supabase-server.ts`、middleware、回调路由）仍直连真实的 `NEXT_PUBLIC_SUPABASE_URL`；浏览器走同源代理。两者指向**同一真实项目**。部署完用 `curl https://<你的应用域名>/api/health` 验证返回 `200` 且 `sameOrigin: true`。
 
@@ -166,7 +168,7 @@ npx cap build android
 - [ ] `GET /api/keepalive` 返回 200
 - [ ] 匿名进入（Supabase Auth anonymous sign-in）成功，能发消息、实时收到
 - [ ] 邮箱注册 / 登录成功，且换设备登录仍能拿到同一身份
-- [ ] 登录后任意 `/api/*`（如 `/api/me`）正常返回，**不再 401**（否则清 SW 缓存 + 重新登录，见 §3.5）
+- [ ] 登录后任意 `/api/*`（如 `/api/me`）正常返回 `200`（若 401：清 SW 缓存 + 重新登录，见 §3.5）
 - [ ] `/admin` 用 role=admin 的账号能进、能删群；非 admin 账号访问 `/api/admin/*` 返回 403
 - [ ] Supabase Tables 有数据；`supabase_realtime` 发布含 `messages` 表（迁移 00019 自动加入）
 - [ ] 改任意环境变量后重新 Deploy 生效
