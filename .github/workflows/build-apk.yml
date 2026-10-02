@@ -34,7 +34,13 @@ jobs:
         # APP_URL 来自仓库 Variables（Settings → Variables → APP_URL），未设置则回退 capacitor.config.ts 中的占位地址
         env:
           APP_URL: ${{ vars.APP_URL }}
-        run: npx cap sync android
+        run: |
+          # android/app/src/main/assets/ 是 cap sync 写 capacitor.config.json /
+          # capacitor.plugins.json 的目标目录，但它由 cap sync 生成、从未提交进仓库，
+          # 全新 checkout 里不存在，会导致 cap sync 写入时 ENOENT 而失败。
+          # 先把它（含 public 子目录）建好，cap sync 才能正常写入。
+          mkdir -p android/app/src/main/assets/public
+          npx cap sync android
 
       - name: Setup Java
         uses: actions/setup-java@v4

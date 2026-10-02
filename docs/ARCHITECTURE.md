@@ -166,7 +166,7 @@
 **限流（应用层，第一道防线）** — `src/lib/rate-limit.ts`，由 middleware 统一执行：按 `客户端IP:路径` 计数，超限返回 `429` + `Retry-After` 与 `X-RateLimit-*` 响应头。
 
 - 敏感路径独立配额：注册 / 登录 10/min、管理后台登录 5/min、上传与房间操作 10–20/min、发消息 30/min、管理操作（含 `audit-logs`）10–20/min；其余默认 60/min。
-- ⚠️ **局限**：应用层限流是**内存级、不跨 Cloudflare 边缘实例共享**，仅作第一道防线。生产环境务必在 **Cloudflare 控制台配置 Rate Limiting Rules**（按客户端 IP + 路径）作为真实边缘防线，见 `docs/cloudflare-rate-limiting.md`。
+- ⚠️ **局限**：应用层限流是**内存级、不跨 Cloudflare 边缘实例共享**，仅作第一道防线。生产环境强烈建议在 **Cloudflare 控制台配置 Rate Limiting Rules**（按客户端 IP + 路径）作为真实边缘防线，见 `docs/cloudflare-rate-limiting.md`。
 
 **SSE 并发上限** — 见 §4.4（每用户 10 / 每 IP 30）。
 

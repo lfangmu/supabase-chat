@@ -49,3 +49,7 @@ next-env.d.ts
 # cloudflare worker / next backups（旧构建产物，可能很大）
 .next-old-*
 .next-bak-*
+
+# Capacitor Android：cap sync 生成的配置/插件清单与 web 资源，不应入库
+# （android/app/src/main/assets/ 在 CI 全新 checkout 里本就不存在，由 workflow 先 mkdir）
+android/app/src/main/assets/

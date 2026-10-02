@@ -6,6 +6,18 @@
 
 **零成本自托管**：前端跑 Cloudflare Pages，数据与实时跑 Supabase，全部可用免费层。
 
+## 为什么做这个项目
+
+多数 Supabase 实时聊天 Demo 默认让浏览器直连 `*.supabase.co` 的 WebSocket。但在中国大陆等会拦截该 WebSocket 升级请求的网络环境下，实时链路会直接失效、消息收不到。
+
+本项目的核心差异点，正是为了解决这个问题：
+
+- **同源 SSE 中继**：把「浏览器 ↔ Supabase 的 WebSocket」拆成两段 HTTP —— `GET /api/realtime`（SSE 长连接收）与 `POST /api/realtime/send`（短连接发），国内网络可通。
+- **同源反向代理**：REST / Auth / Storage 也经 `/api/*` 同源代理，浏览器全程只访问你自己的域名，无需额外部署 Worker。
+- **代理可选**：海外 / 能直连 `*.supabase.co` 的网络可留空 `NEXT_PUBLIC_SUPABASE_PROXY_URL`，浏览器直接连 Supabase；仅在受限网络（如中国大陆）才需要开启。
+
+换句话说：它是一套**在国内网络也能稳定跑起来的 Supabase 实时聊天完整方案**，而不是又一个只能海外跑的 Demo。
+
 ## 功能特性
 
 **消息**
@@ -109,10 +121,10 @@ npm run dev                     # http://localhost:3000
 
 - **Cloudflare Pages**：免费托管前端，含构建、请求量与带宽额度，无需信用卡。
 - **Supabase Free**：免费 Postgres + Realtime + Storage。
-  - ⚠️ 免费项目约 **7 天无数据库活动会被自动暂停**（所有读写与实时订阅失败）。仓库内的 `keepalive.yml` 每 6 小时 ping 一次保活端点来规避——你需要在仓库 `Settings → Variables` 设 `KEEPALIVE_URL`（你的部署地址），否则保活任务会失败。
+  - ⚠️ 免费项目约 **7 天无数据库活动会被自动暂停**（所有读写与实时订阅失败）。仓库内的 `keepalive.yml` 每 6 小时 ping 一次保活端点来规避——你需要在仓库 `Settings → Variables` 设 `APP_URL`（你的部署地址，与构建 APK 共用），否则保活任务会失败。
 - **ImgBB**：图片上传代理可用免费方案，非必需。
 
-> 只要 Supabase 用免费层，就务必保留 keepalive 定时任务并正确配置 `KEEPALIVE_URL`，否则隔一阵子站点会「冻住」。
+> 只要 Supabase 用免费层，就务必保留 keepalive 定时任务并正确配置 `APP_URL`，否则隔一阵子站点会「冻住」。
 
 ## 配置参数获取
 
@@ -126,7 +138,7 @@ npm run dev                     # http://localhost:3000
 | `IMGBB_API_KEY` | ImgBB 图片代理上传 key（可选） |
 | `SUPABASE_PROJECT_REF` | Supabase Dashboard → **Project Settings → General** → Project ID / Reference ID（仅本地 `supabase` CLI 使用） |
 | `SUPABASE_ACCESS_TOKEN` | Supabase 头像菜单 → **Account → Access Tokens** → 新建（仅本地 `supabase` CLI 使用） |
-| `KEEPALIVE_URL` / `APP_URL` | 你自己的部署域名，设为仓库 **Variables**（非 Secrets） |
+| `APP_URL` | 你自己的部署域名，设为仓库 **Variables**（非 Secrets）；keepalive 保活与 APK 构建共用 |
 
 > 鉴权由 **Supabase Auth** 承担，无需密码或 JWT 密钥变量。
 
@@ -139,6 +151,19 @@ npm run dev                     # http://localhost:3000
 - [docs/SUPABASE_EMAIL_RESEND.md](docs/SUPABASE_EMAIL_RESEND.md) — 用 Resend 发送 Supabase 验证 / 重置邮件
 - [docs/cloudflare-rate-limiting.md](docs/cloudflare-rate-limiting.md) — Cloudflare 边缘限流配置（应用层限流之外的第二道防线）
 - [CONTRIBUTING.md](CONTRIBUTING.md) — 贡献指南（开发约定、质量门禁、提交规范）
+
+## 定位与 Roadmap
+
+**定位**：这是作者自用、同时公开参考的完整实例，覆盖实时聊天从鉴权、消息可靠性、安全纵深到部署保活的全链路。你既可以原样自托管使用，也可以把它当作「如何用 Supabase + Next.js 落地带实时能力的生产级应用」的学习参考。
+
+**Roadmap（方向，不承诺排期）**：
+
+- Web 端更多富交互与可访问性优化
+- 更多客户端形态（iOS / 桌面端）
+- 可插拔的实时后端抽象
+- 更细粒度的权限与审计模型
+
+欢迎 Issue 与 PR。这是一个单维护者项目，更新节奏随缘；若用于生产，请自行补充边缘限流等防线（见 [docs/cloudflare-rate-limiting.md](docs/cloudflare-rate-limiting.md)）。
 
 ## 许可证
 

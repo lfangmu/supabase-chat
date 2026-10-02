@@ -18,15 +18,15 @@ jobs:
     steps:
       - name: Ping keepalive endpoint
         env:
-          KEEPALIVE_URL: ${{ vars.KEEPALIVE_URL }}
+          APP_URL: ${{ vars.APP_URL }}
         run: |
-          # 目标地址必须来自仓库 Variables 中的 KEEPALIVE_URL（自部署时设为你的站点 URL）。
+          # 目标地址必须来自仓库 Variables 中的 APP_URL（与构建 APK 共用同一个部署域名）。
           # 仓库不内置任何具体部署地址；未设置则保活任务失败并给出配置提示。
-          if [ -z "${KEEPALIVE_URL}" ]; then
-            echo "::error::未配置 KEEPALIVE_URL（仓库 Variables）。请在仓库 Settings → Secrets and variables → Actions → Variables 中新增 KEEPALIVE_URL，值设为你的部署地址（如 https://your-chat.example.com），否则保活无法运行。"
+          if [ -z "${APP_URL}" ]; then
+            echo "::error::未配置 APP_URL（仓库 Variables）。请在仓库 Settings → Secrets and variables → Actions → Variables 中新增 APP_URL，值设为你的部署地址（如 https://your-chat.example.com），否则保活无法运行。"
             exit 1
           fi
-          URL="${KEEPALIVE_URL}/api/keepalive"
+          URL="${APP_URL}/api/keepalive"
           CODE=$(curl -sS -o /tmp/ka.json -w "%{http_code}" --max-time 20 "$URL")
           echo "HTTP $CODE"
           cat /tmp/ka.json

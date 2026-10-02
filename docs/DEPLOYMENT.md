@@ -141,7 +141,7 @@ push 一次到 `main`（或等上一步完成后），到：
 Supabase 免费项目约 **7 天无数据库活动**会被自动暂停（paused），表现为所有读写与实时订阅失败。
 
 - 端点 `GET /api/keepalive`（`src/app/api/keepalive/route.ts`）用 Service Role 发一次轻量查询，已在 middleware 白名单，无需登录即可访问。
-- `.github/workflows/keepalive.yml` 每 6 小时 `GET` 一次保活端点。**目标地址由 GitHub 仓库 Variable `KEEPALIVE_URL` 控制，且必填**：在仓库 `Settings → Secrets and variables → Actions → Variables` 新增 `KEEPALIVE_URL`，值设为你的部署地址（如 `https://your-chat.pages.dev`）；未设置时保活任务会失败并提示配置。
+- `.github/workflows/keepalive.yml` 每 6 小时 `GET` 一次保活端点。**目标地址由 GitHub 仓库 Variable `APP_URL` 控制（与构建 APK 共用同一个变量），且必填**：在仓库 `Settings → Secrets and variables → Actions → Variables` 设 `APP_URL` 为你的部署地址（如 `https://your-chat.pages.dev`）；未设置时保活任务会失败并提示配置。
 - 若已被暂停：打开 Supabase Dashboard → 对应项目 → 点 **Restore**；恢复后保活任务即可持续生效。
 
 ---
